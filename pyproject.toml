@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "asset-retag"
+version = "0.1.0"
+description = "本地资产标签重贴批处理 CLI 工具"
+requires-python = ">=3.9"
+dependencies = [
+    "click>=8.0",
+    "pyyaml>=6.0",
+    "pydantic>=2.0",
+]
+
+[project.scripts]
+asset-retag = "asset_retag.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

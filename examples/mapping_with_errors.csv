@@ -1,0 +1,10 @@
+old_id,new_tag,asset_type,photo_dir
+OLD001,AST-2024-001,hardware,OLD001_laptop
+OLD002,AST-2024-001,hardware,OLD002_monitor
+OLD003,AST-2024-003,invalid_type,OLD003_software
+OLD004,AST-2024-004,document,NONEXISTENT_DIR
+OLD005,AST-2024-005,other,OLD005_misc
+OLD006,,hardware,OLD006_printer
+OLD007,AST-2024-007,hardware,OLD007_keyboard
+,AST-2024-008,hardware,OLD008_mouse
+OLD009,AST-2024-009,hardware,OLD009_empty

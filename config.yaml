@@ -1,0 +1,17 @@
+# 项目根目录配置文件
+source_root: ./examples/source
+target_root: ./examples/target
+archive_root: ./examples/archive
+operation: copy
+photo_extensions:
+  - jpg
+  - jpeg
+  - png
+  - gif
+  - bmp
+  - tiff
+  - heic
+  - raw
+dir_pattern: "{asset_type}/{new_tag}"
+filename_pattern: "{new_tag}_{idx:04d}.{ext}"
+report_dir: ./examples/reports

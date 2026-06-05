@@ -1,0 +1,16 @@
+archive_root: ./examples/archive
+dir_pattern: '{asset_type}/{new_tag}'
+filename_pattern: '{new_tag}_{idx:04d}.{ext}'
+operation: move
+photo_extensions:
+- jpg
+- jpeg
+- png
+- gif
+- bmp
+- tiff
+- heic
+- raw
+report_dir: ./examples/reports
+source_root: ./examples/source
+target_root: ./examples/target

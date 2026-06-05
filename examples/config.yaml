@@ -1,0 +1,44 @@
+# 资产标签重贴配置文件
+
+# 源根目录：包含所有待处理的照片目录
+source_root: ./examples/source
+
+# 目标根目录：处理后的文件将按分类存放
+target_root: ./examples/target
+
+# 归档目录（可选）：执行 move 操作时，源文件会先归档到此处
+# 注释掉则不启用归档
+archive_root: ./examples/archive
+
+# 操作类型：copy 或 move
+# copy: 复制文件到目标目录，源文件保留
+# move: 移动文件到目标目录，源文件先归档（如果配置了 archive_root）再删除
+operation: copy
+
+# 支持的照片文件扩展名
+photo_extensions:
+  - jpg
+  - jpeg
+  - png
+  - gif
+  - bmp
+  - tiff
+  - heic
+  - raw
+
+# 目标目录命名模板
+# 可用变量: {asset_type}, {new_tag}, {old_id}
+dir_pattern: "{asset_type}/{new_tag}"
+
+# 目标文件命名模板
+# 可用变量: {asset_type}, {new_tag}, {old_id}, {idx}, {ext}
+filename_pattern: "{new_tag}_{idx:04d}.{ext}"
+
+# 状态目录（可选，默认 ~/.asset-retag/state）
+# state_dir: ./examples/state
+
+# 日志目录（可选，默认 ~/.asset-retag/logs）
+# log_dir: ./examples/logs
+
+# 报告目录（可选，默认 ./reports）
+report_dir: ./examples/reports
