@@ -33,6 +33,13 @@ from .state import (
     SnapshotFormatError,
     SnapshotConflictError,
 )
+from .profiles import (
+    ProfileError,
+    ProfileFormatError,
+    ProfileConflictError,
+    ProfileNotFoundError,
+    ProfileManager,
+)
 
 
 # 安全输出（替代 emoji，避免 Windows 编码问题）
@@ -106,22 +113,22 @@ def _classify_parse_errors(errors: List[str]) -> Tuple[List[str], List[str]]:
 
 
 @main.command()
-@click.option("--config", "-c", required=True, type=click.Path(exists=True, dir_okay=False), help="配置文件路径")
+@click.option("--config", "-c", type=click.Path(exists=True, dir_okay=False), help="配置文件路径")
+@click.option("--profile", "-p", help="配置档案名称")
 @click.option("--mapping", "-m", required=True, type=click.Path(exists=True, dir_okay=False), help="CSV 映射文件路径")
 @click.option("--batch-id", "-b", help="指定批次 ID（不指定则自动生成）")
 @click.option("--skip-confirm", is_flag=True, help="跳过确认提示")
 @click.option("--verbose", "-v", is_flag=True, help="显示详细日志")
-def dry_run(config: str, mapping: str, batch_id: Optional[str], skip_confirm: bool, verbose: bool) -> None:
+def dry_run(config: Optional[str], profile: Optional[str], mapping: str, batch_id: Optional[str], skip_confirm: bool, verbose: bool) -> None:
     """预演模式：生成报告，不修改任何资产文件"""
     app_config = None
     state_mgr = None
     batch_created = False
 
     try:
-        config_path = Path(config).resolve()
         mapping_path = Path(mapping).resolve()
 
-        app_config = ConfigParser.parse(config_path)
+        app_config, resolved_config_path = _resolve_config_required(config, profile)
         state_mgr = StateManager(app_config)
 
         # === 第一步：先解析，不创建批次 ===
@@ -187,7 +194,10 @@ def dry_run(config: str, mapping: str, batch_id: Optional[str], skip_confirm: bo
             _safe_echo(f"\n{_ICON_OK} 预演完成，未检测到致命问题，可以执行实际操作")
 
         _safe_echo(f"\n批次 ID: {batch_id}")
-        _safe_echo(f"执行命令: asset-retag run -c {config} -m {mapping} --batch-id {batch_id}")
+        if profile:
+            _safe_echo(f"执行命令: asset-retag run --profile {profile} -m {mapping} --batch-id {batch_id}")
+        else:
+            _safe_echo(f"执行命令: asset-retag run -c {resolved_config_path} -m {mapping} --batch-id {batch_id}")
 
     except FatalPlanningError as e:
         _safe_echo(f"\n{_ICON_ERR} 检测到致命冲突，预演已中止：", err=True)
@@ -217,22 +227,22 @@ def dry_run(config: str, mapping: str, batch_id: Optional[str], skip_confirm: bo
 
 
 @main.command()
-@click.option("--config", "-c", required=True, type=click.Path(exists=True, dir_okay=False), help="配置文件路径")
+@click.option("--config", "-c", type=click.Path(exists=True, dir_okay=False), help="配置文件路径")
+@click.option("--profile", "-p", help="配置档案名称")
 @click.option("--mapping", "-m", required=True, type=click.Path(exists=True, dir_okay=False), help="CSV 映射文件路径")
 @click.option("--batch-id", "-b", help="指定批次 ID（如之前 dry-run 过）")
 @click.option("--skip-confirm", is_flag=True, help="跳过确认提示")
 @click.option("--verbose", "-v", is_flag=True, help="显示详细日志")
-def run(config: str, mapping: str, batch_id: Optional[str], skip_confirm: bool, verbose: bool) -> None:
+def run(config: Optional[str], profile: Optional[str], mapping: str, batch_id: Optional[str], skip_confirm: bool, verbose: bool) -> None:
     """执行资产标签重贴批处理"""
     app_config = None
     state_mgr = None
     batch_created = False
 
     try:
-        config_path = Path(config).resolve()
         mapping_path = Path(mapping).resolve()
 
-        app_config = ConfigParser.parse(config_path)
+        app_config, _ = _resolve_config_required(config, profile)
         state_mgr = StateManager(app_config)
 
         # === 第一步：先解析，不创建批次 ===
@@ -408,13 +418,14 @@ def run(config: str, mapping: str, batch_id: Optional[str], skip_confirm: bool, 
 @main.command()
 @click.option("--batch-id", "-b", required=True, help="要回滚的批次 ID")
 @click.option("--config", "-c", type=click.Path(exists=True, dir_okay=False), help="配置文件路径（可选）")
+@click.option("--profile", "-p", help="配置档案名称")
 @click.option("--dry-run", is_flag=True, help="预演回滚，不实际修改文件")
 @click.option("--skip-confirm", is_flag=True, help="跳过确认提示")
 @click.option("--verbose", "-v", is_flag=True, help="显示详细日志")
-def rollback(batch_id: str, config: Optional[str], dry_run: bool, skip_confirm: bool, verbose: bool) -> None:
+def rollback(batch_id: str, config: Optional[str], profile: Optional[str], dry_run: bool, skip_confirm: bool, verbose: bool) -> None:
     """回滚指定批次的操作"""
     try:
-        app_config = _load_config_or_default(config)
+        app_config, _ = _resolve_config(config, profile)
         setup_logging(app_config.log_dir, batch_id, verbose)
         logger = logging.getLogger(__name__)
 
@@ -531,10 +542,11 @@ def rollback(batch_id: str, config: Optional[str], dry_run: bool, skip_confirm: 
 @main.command("list")
 @click.option("--status", "-s", help="按状态过滤 (pending/planned/executing/completed/partial/failed/rolled_back)")
 @click.option("--config", "-c", type=click.Path(exists=True, dir_okay=False), help="配置文件路径（可选）")
-def list_batches(status: Optional[str], config: Optional[str]) -> None:
+@click.option("--profile", "-p", help="配置档案名称")
+def list_batches(status: Optional[str], config: Optional[str], profile: Optional[str]) -> None:
     """列出所有批次"""
     try:
-        app_config = _load_config_or_default(config)
+        app_config, _ = _resolve_config(config, profile)
         state_mgr = StateManager(app_config)
 
         status_filter = None
@@ -565,10 +577,11 @@ def list_batches(status: Optional[str], config: Optional[str]) -> None:
 @click.option("--batch-id", "-b", required=True, help="批次 ID")
 @click.option("--logs", "-l", is_flag=True, help="显示最近日志")
 @click.option("--config", "-c", type=click.Path(exists=True, dir_okay=False), help="配置文件路径（可选）")
-def show(batch_id: str, logs: bool, config: Optional[str]) -> None:
+@click.option("--profile", "-p", help="配置档案名称")
+def show(batch_id: str, logs: bool, config: Optional[str], profile: Optional[str]) -> None:
     """显示批次详情"""
     try:
-        app_config = _load_config_or_default(config)
+        app_config, _ = _resolve_config(config, profile)
         state_mgr = StateManager(app_config)
         batch = state_mgr.get_batch(batch_id)
 
@@ -587,10 +600,11 @@ def show(batch_id: str, logs: bool, config: Optional[str]) -> None:
 @click.option("--batch-id", "-b", required=True, help="批次 ID")
 @click.option("--tail", "-n", type=int, help="显示最后 N 行")
 @click.option("--config", "-c", type=click.Path(exists=True, dir_okay=False), help="配置文件路径（可选）")
-def logs(batch_id: str, tail: Optional[int], config: Optional[str]) -> None:
+@click.option("--profile", "-p", help="配置档案名称")
+def logs(batch_id: str, tail: Optional[int], config: Optional[str], profile: Optional[str]) -> None:
     """查看批次日志"""
     try:
-        app_config = _load_config_or_default(config)
+        app_config, _ = _resolve_config(config, profile)
         state_mgr = StateManager(app_config)
 
         log_lines = state_mgr.get_logs(batch_id, tail=tail)
@@ -621,11 +635,12 @@ def batch() -> None:
 @click.option("--batch-id", "-b", required=True, help="要导出的批次 ID")
 @click.option("--output-dir", "-o", required=True, type=click.Path(file_okay=False), help="快照输出目录")
 @click.option("--config", "-c", type=click.Path(exists=True, dir_okay=False), help="配置文件路径（可选）")
+@click.option("--profile", "-p", help="配置档案名称")
 @click.option("--overwrite", is_flag=True, help="覆盖已存在的快照文件")
-def batch_export(batch_id: str, output_dir: str, config: Optional[str], overwrite: bool) -> None:
+def batch_export(batch_id: str, output_dir: str, config: Optional[str], profile: Optional[str], overwrite: bool) -> None:
     """导出批次快照"""
     try:
-        app_config = _load_config_or_default(config)
+        app_config, _ = _resolve_config(config, profile)
         state_mgr = StateManager(app_config)
 
         output_path = Path(output_dir).resolve()
@@ -654,12 +669,13 @@ def batch_export(batch_id: str, output_dir: str, config: Optional[str], overwrit
 @batch.command("import")
 @click.option("--snapshot", "-s", required=True, type=click.Path(exists=True, dir_okay=False), help="快照文件路径")
 @click.option("--config", "-c", type=click.Path(exists=True, dir_okay=False), help="配置文件路径（可选）")
+@click.option("--profile", "-p", help="配置档案名称")
 @click.option("--overwrite", is_flag=True, help="覆盖已存在的同名批次")
 @click.option("--skip-confirm", is_flag=True, help="跳过确认提示")
-def batch_import(snapshot: str, config: Optional[str], overwrite: bool, skip_confirm: bool) -> None:
+def batch_import(snapshot: str, config: Optional[str], profile: Optional[str], overwrite: bool, skip_confirm: bool) -> None:
     """导入批次快照"""
     try:
-        app_config = _load_config_or_default(config)
+        app_config, _ = _resolve_config(config, profile)
         state_mgr = StateManager(app_config)
 
         snapshot_file = Path(snapshot).resolve()
@@ -700,6 +716,265 @@ def batch_import(snapshot: str, config: Optional[str], overwrite: bool, skip_con
         sys.exit(1)
 
 
+@main.group()
+def profile() -> None:
+    """配置档案管理"""
+    pass
+
+
+@profile.command("add")
+@click.option("--name", "-n", required=True, help="档案名称")
+@click.option("--config", "-c", required=True, type=click.Path(exists=True, dir_okay=False), help="配置文件路径")
+@click.option("--description", "-d", default="", help="档案描述")
+def profile_add(name: str, config: str, description: str) -> None:
+    """添加配置档案"""
+    try:
+        profile_mgr = ProfileManager()
+        created = profile_mgr.add_profile(name, config, description)
+        _safe_echo(f"{_ICON_OK} 已添加档案 '{name}'")
+        _safe_echo(f"   配置文件: {created.config_path}")
+        if description:
+            _safe_echo(f"   描述: {description}")
+    except ProfileConflictError as e:
+        _safe_echo(f"\n{_ICON_ERR} 档案冲突: {e}", err=True)
+        sys.exit(1)
+    except ProfileError as e:
+        _safe_echo(f"\n{_ICON_ERR} 档案错误: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        _safe_echo(f"\n{_ICON_ERR} 添加档案失败: {e}", err=True)
+        sys.exit(1)
+
+
+@profile.command("list")
+def profile_list() -> None:
+    """列出所有配置档案"""
+    try:
+        profile_mgr = ProfileManager()
+        profiles = profile_mgr.list_profiles()
+        default = profile_mgr.get_default_profile()
+        default_name = default.name if default else None
+
+        if not profiles:
+            _safe_echo(f"{_ICON_INFO} 暂无配置档案，使用 profile add 添加")
+            return
+
+        _safe_echo(f"\n共有 {len(profiles)} 个配置档案：")
+        _safe_echo("-" * 80)
+        for p in profiles:
+            marker = " [*]" if p.name == default_name else ""
+            _safe_echo(f"  {p.name}{marker}")
+            _safe_echo(f"    配置文件: {p.config_path}")
+            if p.description:
+                _safe_echo(f"    描述: {p.description}")
+            _safe_echo(f"    创建时间: {p.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
+        _safe_echo("-" * 80)
+        if default_name:
+            _safe_echo(f"\n默认档案: {default_name} ([*] 标记)")
+            _safe_echo(f"修改默认: asset-retag profile use <name>")
+        else:
+            _safe_echo(f"\n未设置默认档案")
+            _safe_echo(f"设置默认: asset-retag profile use <name>")
+    except ProfileError as e:
+        _safe_echo(f"\n{_ICON_ERR} 档案错误: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        _safe_echo(f"\n{_ICON_ERR} 列出档案失败: {e}", err=True)
+        sys.exit(1)
+
+
+@profile.command("show")
+@click.option("--name", "-n", required=True, help="档案名称")
+def profile_show(name: str) -> None:
+    """显示配置档案详情"""
+    try:
+        profile_mgr = ProfileManager()
+        p = profile_mgr.get_profile(name)
+        default = profile_mgr.get_default_profile()
+        is_default = default and default.name == name
+
+        _safe_echo(f"\n档案名称: {p.name}" + ("  [默认]" if is_default else ""))
+        _safe_echo(f"配置文件: {p.config_path}")
+        if p.description:
+            _safe_echo(f"描述: {p.description}")
+        _safe_echo(f"创建时间: {p.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
+        _safe_echo(f"更新时间: {p.updated_at.strftime('%Y-%m-%d %H:%M:%S')}")
+
+        if p.config_path.exists():
+            content = p.config_path.read_text(encoding="utf-8")
+            _safe_echo(f"\n配置文件内容:")
+            _safe_echo("-" * 80)
+            for line in content.splitlines()[:50]:
+                _safe_echo(line)
+            if len(content.splitlines()) > 50:
+                _safe_echo(f"... (还有 {len(content.splitlines()) - 50} 行)")
+            _safe_echo("-" * 80)
+        else:
+            _safe_echo(f"\n{_ICON_WARN} 配置文件不存在: {p.config_path}")
+    except ProfileNotFoundError as e:
+        _safe_echo(f"\n{_ICON_ERR} 档案不存在: {e}", err=True)
+        sys.exit(1)
+    except ProfileError as e:
+        _safe_echo(f"\n{_ICON_ERR} 档案错误: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        _safe_echo(f"\n{_ICON_ERR} 显示档案失败: {e}", err=True)
+        sys.exit(1)
+
+
+@profile.command("use")
+@click.option("--name", "-n", required=True, help="档案名称")
+def profile_use(name: str) -> None:
+    """设置默认配置档案"""
+    try:
+        profile_mgr = ProfileManager()
+        old_default = profile_mgr.get_default_profile()
+        old_name = old_default.name if old_default else None
+
+        set_p = profile_mgr.use_profile(name)
+
+        _safe_echo(f"{_ICON_OK} 已设置默认档案: {name}")
+        _safe_echo(f"   配置文件: {set_p.config_path}")
+        if old_name and old_name != name:
+            _safe_echo(f"   之前默认: {old_name}")
+            _safe_echo(f"\n撤销切换: asset-retag profile undo-use")
+    except ProfileNotFoundError as e:
+        _safe_echo(f"\n{_ICON_ERR} 档案不存在: {e}", err=True)
+        sys.exit(1)
+    except ProfileError as e:
+        _safe_echo(f"\n{_ICON_ERR} 档案错误: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        _safe_echo(f"\n{_ICON_ERR} 设置默认档案失败: {e}", err=True)
+        sys.exit(1)
+
+
+@profile.command("undo-use")
+def profile_undo_use() -> None:
+    """撤销最近一次默认档案切换"""
+    try:
+        profile_mgr = ProfileManager()
+        result = profile_mgr.undo_use()
+
+        if result is None:
+            _safe_echo(f"{_ICON_INFO} 没有可撤销的 use 操作")
+            return
+
+        restored = result["before"]["default_profile"]
+        previous = result["after"]["default_profile"]
+
+        _safe_echo(f"{_ICON_OK} 已撤销默认档案切换")
+        _safe_echo(f"   恢复默认: {restored or '(无)'}")
+        if previous:
+            _safe_echo(f"   之前设置: {previous}")
+    except ProfileError as e:
+        _safe_echo(f"\n{_ICON_ERR} 档案错误: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        _safe_echo(f"\n{_ICON_ERR} 撤销失败: {e}", err=True)
+        sys.exit(1)
+
+
+@profile.command("remove")
+@click.option("--name", "-n", required=True, help="档案名称")
+@click.option("--skip-confirm", is_flag=True, help="跳过确认提示")
+def profile_remove(name: str, skip_confirm: bool) -> None:
+    """删除配置档案"""
+    try:
+        profile_mgr = ProfileManager()
+        p = profile_mgr.get_profile(name)
+        default = profile_mgr.get_default_profile()
+        is_default = default and default.name == name
+
+        _safe_echo(f"档案名称: {name}" + ("  [默认]" if is_default else ""))
+        _safe_echo(f"配置文件: {p.config_path}")
+
+        if not skip_confirm:
+            if is_default:
+                if not click.confirm(f"\n确认删除默认档案 '{name}'？删除后默认档案将被清除。", default=False):
+                    _safe_echo("已取消。")
+                    return
+            else:
+                if not click.confirm(f"\n确认删除档案 '{name}'？", default=False):
+                    _safe_echo("已取消。")
+                    return
+
+        profile_mgr.remove_profile(name)
+        _safe_echo(f"{_ICON_OK} 已删除档案: {name}")
+    except ProfileNotFoundError as e:
+        _safe_echo(f"\n{_ICON_ERR} 档案不存在: {e}", err=True)
+        sys.exit(1)
+    except ProfileError as e:
+        _safe_echo(f"\n{_ICON_ERR} 档案错误: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        _safe_echo(f"\n{_ICON_ERR} 删除档案失败: {e}", err=True)
+        sys.exit(1)
+
+
+@profile.command("export")
+@click.option("--name", "-n", required=True, help="档案名称")
+@click.option("--output", "-o", required=True, type=click.Path(file_okay=True), help="输出文件路径（或目录）")
+@click.option("--overwrite", is_flag=True, help="覆盖已存在的文件")
+def profile_export(name: str, output: str, overwrite: bool) -> None:
+    """导出配置档案到 JSON"""
+    try:
+        profile_mgr = ProfileManager()
+        output_path = Path(output).resolve()
+
+        if output_path.exists() and output_path.is_dir():
+            output_path = output_path / f"{name}_profile.json"
+
+        if output_path.exists() and not overwrite:
+            raise ProfileConflictError(
+                f"输出文件已存在: {output_path}。如需覆盖，请使用 --overwrite 参数。"
+            )
+
+        exported = profile_mgr.export_profile(name, output_path)
+        _safe_echo(f"{_ICON_OK} 档案已导出: {exported}")
+    except ProfileNotFoundError as e:
+        _safe_echo(f"\n{_ICON_ERR} 档案不存在: {e}", err=True)
+        sys.exit(1)
+    except ProfileConflictError as e:
+        _safe_echo(f"\n{_ICON_ERR} 档案冲突: {e}", err=True)
+        sys.exit(1)
+    except ProfileError as e:
+        _safe_echo(f"\n{_ICON_ERR} 档案错误: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        _safe_echo(f"\n{_ICON_ERR} 导出档案失败: {e}", err=True)
+        sys.exit(1)
+
+
+@profile.command("import")
+@click.option("--file", "-f", "import_file", required=True, type=click.Path(exists=True, dir_okay=False), help="导入的 JSON 文件路径")
+@click.option("--overwrite", is_flag=True, help="覆盖已存在的同名档案（原子替换）")
+def profile_import_cmd(import_file: str, overwrite: bool) -> None:
+    """从 JSON 导入配置档案"""
+    try:
+        profile_mgr = ProfileManager()
+        imported = profile_mgr.import_profile(import_file, overwrite=overwrite)
+
+        _safe_echo(f"{_ICON_OK} 已导入档案: {imported.name}")
+        _safe_echo(f"   配置文件: {imported.config_path}")
+        if imported.description:
+            _safe_echo(f"   描述: {imported.description}")
+        if overwrite:
+            _safe_echo(f"   (已覆盖同名档案)")
+    except ProfileFormatError as e:
+        _safe_echo(f"\n{_ICON_ERR} 档案格式错误: {e}", err=True)
+        sys.exit(1)
+    except ProfileConflictError as e:
+        _safe_echo(f"\n{_ICON_ERR} 档案冲突: {e}", err=True)
+        sys.exit(1)
+    except ProfileError as e:
+        _safe_echo(f"\n{_ICON_ERR} 档案错误: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        _safe_echo(f"\n{_ICON_ERR} 导入档案失败: {e}", err=True)
+        sys.exit(1)
+
+
 def _discover_config_path() -> Optional[Path]:
     """自动发现配置文件路径"""
     candidates = [
@@ -714,21 +989,75 @@ def _discover_config_path() -> Optional[Path]:
     return None
 
 
-def _load_config_or_default(config_path: Optional[str]) -> object:
-    """加载配置，或使用默认配置（仅用于查看历史批次）"""
+def _resolve_config(
+    config_path: Optional[str],
+    profile_name: Optional[str],
+) -> Tuple[object, Optional[Path]]:
+    """解析配置来源：--config 优先，其次 --profile，再次自动发现，最后默认值
+
+    Args:
+        config_path: --config 参数值
+        profile_name: --profile 参数值
+
+    Returns:
+        (AppConfig 对象, 实际配置文件路径) 元组。
+        如果使用内置默认值时配置文件路径为 None。
+    """
     if config_path:
-        return ConfigParser.parse(Path(config_path).resolve())
+        resolved = Path(config_path).resolve()
+        return ConfigParser.parse(resolved), resolved
+
+    if profile_name:
+        profile_mgr = ProfileManager()
+        try:
+            profile = profile_mgr.get_profile(profile_name)
+        except ProfileNotFoundError as e:
+            raise click.ClickException(str(e))
+        return ConfigParser.parse(profile.config_path), profile.config_path
+
+    profile_mgr = ProfileManager()
+    default_profile = profile_mgr.get_default_profile()
+    if default_profile:
+        return ConfigParser.parse(default_profile.config_path), default_profile.config_path
 
     discovered = _discover_config_path()
     if discovered:
-        return ConfigParser.parse(discovered)
+        return ConfigParser.parse(discovered), discovered
 
     from .models import AppConfig, OperationType
     return AppConfig(
         source_root=Path.cwd(),
         target_root=Path.cwd() / "target",
         operation=OperationType.COPY,
-    )
+    ), None
+
+
+def _resolve_config_required(
+    config_path: Optional[str],
+    profile_name: Optional[str],
+) -> Tuple[object, Path]:
+    """解析配置（必须有来源，不能使用内置默认值）
+
+    用于 dry-run/run 等必须有配置文件的命令。
+
+    Returns:
+        (AppConfig 对象, 配置文件路径) 元组
+    """
+    app_config, resolved_path = _resolve_config(config_path, profile_name)
+    if resolved_path is None:
+        raise click.ClickException(
+            "未指定配置文件。请使用 --config 指定配置文件路径，"
+            "或使用 --profile 指定档案名称，"
+            "或在当前目录放置 config.yaml，"
+            "或使用 profile use 设置默认档案。"
+        )
+    return app_config, resolved_path
+
+
+def _load_config_or_default(config_path: Optional[str]) -> object:
+    """加载配置，或使用默认配置（仅用于查看历史批次）"""
+    app_config, _ = _resolve_config(config_path, None)
+    return app_config
 
 
 if __name__ == "__main__":

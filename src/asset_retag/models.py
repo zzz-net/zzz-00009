@@ -101,3 +101,32 @@ class BatchState:
     plan: Optional[Dict[str, Any]] = None
     operations: List[Dict[str, Any]] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
+
+
+@dataclass
+class Profile:
+    """配置档案"""
+    name: str
+    config_path: Path
+    created_at: datetime
+    updated_at: datetime
+    description: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "config_path": str(self.config_path),
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+            "description": self.description,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Profile":
+        return cls(
+            name=data["name"],
+            config_path=Path(data["config_path"]),
+            created_at=datetime.fromisoformat(data["created_at"]),
+            updated_at=datetime.fromisoformat(data["updated_at"]),
+            description=data.get("description", ""),
+        )

@@ -139,6 +139,71 @@ asset-retag batch import --snapshot ./snapshots/<BATCH_ID>_snapshot.json --confi
 >
 > **导入后可用性**：导入的批次可正常使用 `list`/`show`/`logs`/`rollback` 命令，进程重启后依然可用。
 
+### 7. 配置档案 (Profile) 管理
+
+```bash
+# 添加配置档案（把 config.yaml 注册为命名档案）
+asset-retag profile add --name production --config ./config.yaml --description "生产环境配置"
+asset-retag profile add --name test --config ./examples/config.yaml --description "测试环境配置"
+
+# 查看所有档案（默认档案带 [*] 标记）
+asset-retag profile list
+
+# 查看档案详情（含配置文件内容）
+asset-retag profile show --name production
+
+# 设置默认档案（跨进程重启保持）
+asset-retag profile use --name production
+
+# 撤销最近一次默认档案切换
+asset-retag profile undo-use
+
+# 删除档案（删除默认档案会同时清除默认设置）
+asset-retag profile remove --name test --skip-confirm
+
+# 导出档案到 JSON
+asset-retag profile export --name production --output ./snapshots/
+asset-retag profile export --name production --output ./snapshots/prod_profile.json --overwrite
+
+# 从 JSON 导入档案（同名默认拒绝）
+asset-retag profile import --file ./snapshots/production_profile.json
+
+# 强制覆盖同名档案（原子替换）
+asset-retag profile import --file ./snapshots/production_profile.json --overwrite
+```
+
+> **档案特性**：
+> - 默认档案通过 `~/.asset-retag/profiles/profiles.json` 持久化，**跨进程重启保持**
+> - `use` 和 `remove` 操作会写入 `profile_operations.log` 操作日志
+> - `undo-use` 可以撤销最近一次 `use` 操作，恢复之前的默认档案
+> - 导入导出使用 JSON 格式，包含档案名称、配置路径、描述、创建/更新时间
+> - 同名导入默认拒绝，`--overwrite` 时原子替换
+> - 导入时会校验：JSON 完整性、必填字段、配置文件存在性、目标目录写权限
+
+#### 使用档案复用配置
+
+所有接受 `--config` 的命令都可以用 `--profile` 复用已注册的档案：
+
+```bash
+# dry-run / run 使用档案
+asset-retag dry-run --profile production -m ./mapping.csv
+asset-retag run --profile production -m ./mapping.csv --skip-confirm
+
+# list / show / logs 使用档案
+asset-retag list --profile test
+asset-retag show --batch-id batch_20240101_120000_abcd --profile test
+asset-retag logs --batch-id batch_20240101_120000_abcd --profile test
+
+# rollback 使用档案
+asset-retag rollback --batch-id batch_20240101_120000_abcd --profile test --dry-run
+
+# batch 快照导入导出使用档案
+asset-retag batch export --batch-id batch_20240101_120000_abcd --profile production --output-dir ./snapshots
+asset-retag batch import --snapshot ./snapshots/batch_xxx_snapshot.json --profile test --skip-confirm
+```
+
+> 配置优先级：`--config` > `--profile` > 自动发现 `./config.yaml` > 默认档案 > 内置默认值
+
 ## 📋 配置说明 (`config.yaml`)
 
 ```yaml
@@ -304,8 +369,52 @@ asset-retag batch import --snapshot ./snapshots/test_normal_run_001_snapshot.jso
 # 强制覆盖导入
 asset-retag batch import --snapshot ./snapshots/test_normal_run_001_snapshot.json --overwrite --skip-confirm
 
-# 跨配置目录导入测试（state/log 目录不一致时报错）
-asset-retag batch import --snapshot ./snapshots/test_normal_run_001_snapshot.json --config other_config.yaml
+# 跨配置目录导入测试（state/log 目录不一致时仍能成功）
+asset-retag batch import --snapshot ./snapshots/test_normal_run_001_snapshot.json --config other_config.yaml --skip-confirm
+
+# ========== 跨配置目录迁移场景 ==========
+
+# 场景：在机器 A 使用了 ~/old_workspace/config.yaml 执行了批次，现在要迁移到机器 B 的 ~/new_workspace/
+
+# 1. 在机器 A 导出批次快照
+asset-retag batch export --batch-id batch_20240101_120000_abcd1234 --output-dir ./snapshots --config ~/old_workspace/config.yaml
+
+# 2. 把快照文件拷贝到机器 B
+#    scp ./snapshots/batch_20240101_120000_abcd1234_snapshot.json user@machineB:~/
+
+# 3. 在机器 B 使用新配置导入（state/log/report 路径自动适配新配置）
+asset-retag batch import \
+  --snapshot ~/batch_20240101_120000_abcd1234_snapshot.json \
+  --config ~/new_workspace/config.yaml \
+  --skip-confirm
+
+# 4. 验证迁移结果
+asset-retag list --config ~/new_workspace/config.yaml
+asset-retag show --batch-id batch_20240101_120000_abcd1234 --config ~/new_workspace/config.yaml
+asset-retag logs --batch-id batch_20240101_120000_abcd1234 --config ~/new_workspace/config.yaml
+asset-retag rollback --batch-id batch_20240101_120000_abcd1234 --config ~/new_workspace/config.yaml --dry-run
+
+# ========== 错误提示示例 ==========
+
+# 同名批次冲突（默认拒绝，提示使用 --overwrite）
+asset-retag batch import --snapshot ./snapshots/test_normal_run_001_snapshot.json --skip-confirm
+# 输出：[ERR] 快照冲突: 批次 test_normal_run_001 已存在（状态文件: ...）。如需覆盖，请使用 --overwrite 参数进行原子替换。
+
+# 快照文件损坏
+asset-retag batch import --snapshot ./snapshots/broken.json --skip-confirm
+# 输出：[ERR] 快照格式错误: 快照 JSON 解析失败，文件可能已损坏: ...
+
+# 快照缺少必填字段
+asset-retag batch import --snapshot ./snapshots/incomplete.json --skip-confirm
+# 输出：[ERR] 快照格式错误: 快照缺少必填字段: state
+
+# 快照含非法状态值
+asset-retag batch import --snapshot ./snapshots/bad_status.json --skip-confirm
+# 输出：[ERR] 快照格式错误: 无效的批次状态: invalid_status_123
+
+# 目标目录无权限
+asset-retag batch import --snapshot ./snapshots/test_normal_run_001_snapshot.json --config /root/restricted_config.yaml --skip-confirm
+# 输出：[ERR] 快照错误: 目标目录权限不足，无法创建 state/log 目录: ...
 ```
 
 ## ⚠️ 注意事项

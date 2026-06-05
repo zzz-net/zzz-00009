@@ -1341,6 +1341,527 @@ def _get_state_manager():
     return StateManager(config)
 
 
+def _cleanup_profiles() -> None:
+    """清理测试档案数据"""
+    profiles_dir = Path.home() / ".asset-retag" / "profiles"
+    if profiles_dir.exists():
+        try:
+            shutil.rmtree(profiles_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
+def _get_profile_manager():
+    """获取 ProfileManager 实例（用于测试内部方法）"""
+    from asset_retag.profiles import ProfileManager
+    return ProfileManager()
+
+
+def test_17_profile_add_list_show() -> None:
+    """测试17：档案添加、列表、详情查看"""
+    print("\n" + "=" * 60)
+    print("测试17：Profile add/list/show")
+    print("=" * 60)
+
+    cleanup_test_state()
+    _cleanup_profiles()
+
+    code, stdout, stderr = run_cli([
+        "profile", "list",
+    ])
+    assert_exit_code(code, 0, "空列表退出码", stdout, stderr)
+    assert_in_output("暂无配置档案", stdout, "空列表提示", "stdout")
+    print("[INFO] 空档案列表正确显示")
+
+    code, stdout, stderr = run_cli([
+        "profile", "add",
+        "--name", "test_prod",
+        "--config", str(EXAMPLES_DIR / "config.yaml"),
+        "--description", "生产环境配置",
+    ])
+    assert_exit_code(code, 0, "添加档案退出码", stdout, stderr)
+    assert_in_output("已添加档案", stdout, "添加成功提示", "stdout")
+    assert_in_output("test_prod", stdout, "档案名称", "stdout")
+    print("[INFO] 档案添加成功")
+
+    code, stdout, stderr = run_cli([
+        "profile", "add",
+        "--name", "test_test",
+        "--config", str(EXAMPLES_DIR / "config.yaml"),
+    ])
+    assert_exit_code(code, 0, "添加第二个档案退出码", stdout, stderr)
+
+    code, stdout, stderr = run_cli([
+        "profile", "list",
+    ])
+    assert_exit_code(code, 0, "列表退出码", stdout, stderr)
+    assert_in_output("test_prod", stdout, "列表显示 test_prod", "stdout")
+    assert_in_output("test_test", stdout, "列表显示 test_test", "stdout")
+    assert_in_output("生产环境配置", stdout, "列表显示描述", "stdout")
+    print("[INFO] 档案列表正确显示")
+
+    code, stdout, stderr = run_cli([
+        "profile", "show",
+        "--name", "test_prod",
+    ])
+    assert_exit_code(code, 0, "详情退出码", stdout, stderr)
+    assert_in_output("test_prod", stdout, "详情显示名称", "stdout")
+    assert_in_output("生产环境配置", stdout, "详情显示描述", "stdout")
+    assert_in_output("配置文件内容", stdout, "详情显示配置内容", "stdout")
+    print("[INFO] 档案详情正确显示")
+
+    code, stdout, stderr = run_cli([
+        "profile", "show",
+        "--name", "nonexistent_profile",
+    ])
+    assert_exit_code(code, 1, "不存在档案详情退出码", stdout, stderr)
+    assert_in_output("档案不存在", stdout + stderr, "档案不存在错误", "输出")
+    print("[INFO] 不存在档案正确报错")
+
+    print("[PASS] 测试17完成 - Profile add/list/show 正确")
+
+
+def test_18_profile_use_undo_use() -> None:
+    """测试18：默认档案切换与撤销（跨进程重启保持）"""
+    print("\n" + "=" * 60)
+    print("测试18：Profile use/undo-use + 跨重启持久化")
+    print("=" * 60)
+
+    cleanup_test_state()
+    _cleanup_profiles()
+
+    run_cli([
+        "profile", "add",
+        "--name", "profile_a",
+        "--config", str(EXAMPLES_DIR / "config.yaml"),
+    ])
+    run_cli([
+        "profile", "add",
+        "--name", "profile_b",
+        "--config", str(EXAMPLES_DIR / "config.yaml"),
+    ])
+
+    code, stdout, stderr = run_cli([
+        "profile", "use",
+        "--name", "profile_a",
+    ])
+    assert_exit_code(code, 0, "use profile_a 退出码", stdout, stderr)
+    assert_in_output("已设置默认档案", stdout, "use 成功提示", "stdout")
+    assert_in_output("profile_a", stdout, "use 显示名称", "stdout")
+    print("[INFO] 默认档案设置为 profile_a")
+
+    code, stdout, stderr = run_cli(["profile", "list"])
+    assert_exit_code(code, 0, "列表后退出码", stdout, stderr)
+    assert_in_output("profile_a [*]", stdout, "列表标记默认档案", "stdout")
+    print("[INFO] 列表正确标记默认档案 [*]")
+
+    code, stdout, stderr = run_cli([
+        "profile", "use",
+        "--name", "profile_b",
+    ])
+    assert_exit_code(code, 0, "use profile_b 退出码", stdout, stderr)
+    assert_in_output("之前默认", stdout, "use 显示之前默认", "stdout")
+    assert_in_output("profile_a", stdout, "use 显示 profile_a 为之前", "stdout")
+    print("[INFO] 默认档案切换为 profile_b，正确记录之前默认")
+
+    pm_after_b = _get_profile_manager()
+    default_after_b = pm_after_b.get_default_profile()
+    assert default_after_b is not None, "切换后应该有默认档案"
+    assert default_after_b.name == "profile_b", f"默认应为 profile_b，实际 {default_after_b.name}"
+    print("[INFO] 模拟进程重启（新建 ProfileManager）后默认档案仍为 profile_b")
+
+    pm_restart = _get_profile_manager()
+    default_restart = pm_restart.get_default_profile()
+    assert default_restart is not None, "重启后应该有默认档案"
+    assert default_restart.name == "profile_b", f"重启后默认应为 profile_b，实际 {default_restart.name}"
+    print("[INFO] 跨进程重启后默认档案持久化正确")
+
+    code, stdout, stderr = run_cli(["profile", "undo-use"])
+    assert_exit_code(code, 0, "第一次 undo-use 退出码", stdout, stderr)
+    assert_in_output("已撤销默认档案切换", stdout, "第一次 undo-use 成功提示", "stdout")
+    assert_in_output("profile_a", stdout, "第一次 undo-use 恢复 profile_a", "stdout")
+    print("[INFO] 第一次 undo-use 正确恢复到 profile_a")
+
+    pm_undo = _get_profile_manager()
+    default_undo = pm_undo.get_default_profile()
+    assert default_undo is not None, "undo 后应该有默认档案"
+    assert default_undo.name == "profile_a", f"undo 后默认应为 profile_a，实际 {default_undo.name}"
+    print("[INFO] undo-use 后默认档案正确恢复为 profile_a")
+
+    code, stdout, stderr = run_cli(["profile", "undo-use"])
+    assert_exit_code(code, 0, "第二次 undo-use 退出码", stdout, stderr)
+    assert_in_output("已撤销默认档案切换", stdout, "第二次 undo-use 成功提示", "stdout")
+    assert_in_output("(无)", stdout, "第二次 undo-use 恢复为无默认", "stdout")
+    print("[INFO] 第二次 undo-use 正确恢复到无默认档案")
+
+    pm_undo2 = _get_profile_manager()
+    default_undo2 = pm_undo2.get_default_profile()
+    assert default_undo2 is None, "第二次 undo 后应无默认档案"
+    print("[INFO] 第二次 undo-use 后无默认档案（正确）")
+
+    code, stdout, stderr = run_cli(["profile", "undo-use"])
+    assert_exit_code(code, 0, "第三次 undo-use 退出码", stdout, stderr)
+    assert_in_output("没有可撤销", stdout, "第三次 undo 提示无操作", "stdout")
+    print("[INFO] 无可撤销操作时正确提示")
+
+    print("[PASS] 测试18完成 - Profile use/undo-use + 跨重启持久化正确")
+
+
+def test_19_profile_remove() -> None:
+    """测试19：档案删除（含默认档案删除）"""
+    print("\n" + "=" * 60)
+    print("测试19：Profile remove")
+    print("=" * 60)
+
+    cleanup_test_state()
+    _cleanup_profiles()
+
+    run_cli([
+        "profile", "add",
+        "--name", "to_remove",
+        "--config", str(EXAMPLES_DIR / "config.yaml"),
+    ])
+    run_cli([
+        "profile", "add",
+        "--name", "default_p",
+        "--config", str(EXAMPLES_DIR / "config.yaml"),
+    ])
+    run_cli(["profile", "use", "--name", "default_p"])
+
+    code, stdout, stderr = run_cli([
+        "profile", "remove",
+        "--name", "to_remove",
+        "--skip-confirm",
+    ])
+    assert_exit_code(code, 0, "删除普通档案退出码", stdout, stderr)
+    assert_in_output("已删除档案", stdout, "删除成功提示", "stdout")
+    assert_in_output("to_remove", stdout, "删除显示名称", "stdout")
+    print("[INFO] 普通档案删除成功")
+
+    code, stdout, stderr = run_cli([
+        "profile", "remove",
+        "--name", "to_remove",
+        "--skip-confirm",
+    ])
+    assert_exit_code(code, 1, "删除不存在档案退出码", stdout, stderr)
+    assert_in_output("档案不存在", stdout + stderr, "删除不存在报错", "输出")
+    print("[INFO] 删除不存在档案正确报错")
+
+    pm_before = _get_profile_manager()
+    assert pm_before.get_default_profile() is not None, "删除默认前应该有默认档案"
+    assert pm_before.get_default_profile().name == "default_p", "默认应为 default_p"
+
+    code, stdout, stderr = run_cli([
+        "profile", "remove",
+        "--name", "default_p",
+        "--skip-confirm",
+    ])
+    assert_exit_code(code, 0, "删除默认档案退出码", stdout, stderr)
+    assert_in_output("已删除档案", stdout, "删除默认成功提示", "stdout")
+    print("[INFO] 默认档案删除成功")
+
+    pm_after = _get_profile_manager()
+    assert pm_after.get_default_profile() is None, "删除默认档案后应无默认"
+    print("[INFO] 删除默认档案后默认被正确清除")
+
+    print("[PASS] 测试19完成 - Profile remove 正确")
+
+
+def test_20_profile_export_import_conflict() -> None:
+    """测试20：档案导入导出 + 同名冲突拒绝 + 覆盖导入"""
+    print("\n" + "=" * 60)
+    print("测试20：Profile export/import + 冲突拒绝 + 覆盖")
+    print("=" * 60)
+
+    cleanup_test_state()
+    _cleanup_profiles()
+
+    run_cli([
+        "profile", "add",
+        "--name", "export_test",
+        "--config", str(EXAMPLES_DIR / "config.yaml"),
+        "--description", "导出测试档案",
+    ])
+
+    export_dir = EXAMPLES_DIR / "snapshots"
+    if export_dir.exists():
+        shutil.rmtree(export_dir, ignore_errors=True)
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    code, stdout, stderr = run_cli([
+        "profile", "export",
+        "--name", "export_test",
+        "--output", str(export_dir),
+    ])
+    assert_exit_code(code, 0, "导出退出码", stdout, stderr)
+    assert_in_output("档案已导出", stdout, "导出成功提示", "stdout")
+
+    export_file = export_dir / "export_test_profile.json"
+    assert export_file.exists(), f"导出文件应存在: {export_file}"
+    print(f"[INFO] 导出文件已创建: {export_file}")
+
+    with open(export_file, "r", encoding="utf-8") as f:
+        export_data = json.load(f)
+    assert export_data["profile_version"] == "1.0"
+    assert export_data["profile"]["name"] == "export_test"
+    assert export_data["profile"]["description"] == "导出测试档案"
+    print("[INFO] 导出文件内容完整")
+
+    code, stdout, stderr = run_cli([
+        "profile", "import",
+        "--file", str(export_file),
+    ])
+    assert_exit_code(code, 1, "同名导入退出码", stdout, stderr)
+    assert_in_output("已存在", stdout + stderr, "同名冲突提示", "输出")
+    assert_in_output("--overwrite", stdout + stderr, "覆盖参数提示", "输出")
+    print("[INFO] 同名导入正确拒绝")
+
+    import shutil as _shutil
+    other_config = EXAMPLES_DIR / "config_import_test.yaml"
+    other_config.write_text("""
+source_root: ./examples/source
+target_root: ./examples/target
+operation: copy
+photo_extensions:
+  - jpg
+report_dir: ./examples/reports
+""", encoding="utf-8")
+
+    modified_export = export_dir / "export_test_modified_profile.json"
+    export_data["profile"]["config_path"] = str(other_config)
+    export_data["profile"]["description"] = "已修改的档案"
+    with open(modified_export, "w", encoding="utf-8") as f:
+        json.dump(export_data, f, ensure_ascii=False, indent=2)
+
+    code, stdout, stderr = run_cli([
+        "profile", "import",
+        "--file", str(modified_export),
+        "--overwrite",
+    ])
+    assert_exit_code(code, 0, "覆盖导入退出码", stdout, stderr)
+    assert_in_output("已导入档案", stdout, "覆盖导入成功提示", "stdout")
+    assert_in_output("已覆盖", stdout, "覆盖标记", "stdout")
+    print("[INFO] 覆盖导入成功")
+
+    pm_after = _get_profile_manager()
+    updated = pm_after.get_profile("export_test")
+    assert updated.description == "已修改的档案", f"描述应为已修改，实际 {updated.description}"
+    print("[INFO] 覆盖导入后档案内容已更新")
+
+    broken_file = export_dir / "broken_profile.json"
+    broken_file.write_text("{this is not valid json", encoding="utf-8")
+
+    code, stdout, stderr = run_cli([
+        "profile", "import",
+        "--file", str(broken_file),
+    ])
+    assert_exit_code(code, 1, "损坏JSON导入退出码", stdout, stderr)
+    assert_in_output("JSON 解析失败", stdout + stderr, "JSON 错误提示", "输出")
+    print("[INFO] 损坏 JSON 正确报错")
+
+    incomplete_file = export_dir / "incomplete_profile.json"
+    incomplete_file.write_text(json.dumps({"only": "name"}, ensure_ascii=False), encoding="utf-8")
+
+    code, stdout, stderr = run_cli([
+        "profile", "import",
+        "--file", str(incomplete_file),
+    ])
+    assert_exit_code(code, 1, "缺字段导入退出码", stdout, stderr)
+    assert_in_output("缺少必填字段", stdout + stderr, "缺字段提示", "输出")
+    print("[INFO] 缺字段 JSON 正确报错")
+
+    nonexistent_config_file = export_dir / "nonexistent_cfg_profile.json"
+    nonexistent_cfg_data = dict(export_data)
+    nonexistent_cfg_data["profile"]["config_path"] = str(EXAMPLES_DIR / "nonexistent_12345.yaml")
+    with open(nonexistent_config_file, "w", encoding="utf-8") as f:
+        json.dump(nonexistent_cfg_data, f, ensure_ascii=False, indent=2)
+
+    code, stdout, stderr = run_cli([
+        "profile", "import",
+        "--file", str(nonexistent_config_file),
+    ])
+    assert_exit_code(code, 1, "配置不存在导入退出码", stdout, stderr)
+    assert_in_output("配置文件不存在", stdout + stderr, "配置不存在提示", "输出")
+    print("[INFO] 配置文件不存在正确报错")
+
+    try:
+        other_config.unlink()
+    except Exception:
+        pass
+
+    print("[PASS] 测试20完成 - Profile 导入导出/冲突/覆盖/格式错误正确")
+
+
+def test_21_profile_in_batch_commands() -> None:
+    """测试21：批次命令通过 --profile 正确找到 state/log/report 目录"""
+    print("\n" + "=" * 60)
+    print("测试21：批次命令通过 --profile 正确路由 state/log/report")
+    print("=" * 60)
+
+    cleanup_test_state()
+    _cleanup_profiles()
+
+    custom_state_dir = EXAMPLES_DIR / "state_profile_test"
+    custom_log_dir = EXAMPLES_DIR / "logs_profile_test"
+    custom_report_dir = EXAMPLES_DIR / "reports_profile_test"
+
+    for d in [custom_state_dir, custom_log_dir, custom_report_dir]:
+        if d.exists():
+            try:
+                shutil.rmtree(d, ignore_errors=True)
+            except Exception:
+                pass
+
+    profile_config = EXAMPLES_DIR / "config_profile_test.yaml"
+    profile_config.write_text(f"""
+source_root: ./examples/source
+target_root: ./examples/target
+operation: copy
+photo_extensions:
+  - jpg
+  - jpeg
+  - png
+state_dir: {custom_state_dir}
+log_dir: {custom_log_dir}
+report_dir: {custom_report_dir}
+""", encoding="utf-8")
+
+    code, stdout, stderr = run_cli([
+        "profile", "add",
+        "--name", "custom_dirs",
+        "--config", str(profile_config),
+        "--description", "自定义 state/log/report 目录",
+    ])
+    assert_exit_code(code, 0, "添加 profile 退出码", stdout, stderr)
+
+    batch_id = "test_profile_batch_001"
+    code, stdout, stderr = run_cli([
+        "dry-run",
+        "--profile", "custom_dirs",
+        "-m", str(EXAMPLES_DIR / "mapping.csv"),
+        "--batch-id", batch_id,
+    ])
+    assert_exit_code(code, 0, "dry-run via profile 退出码", stdout, stderr)
+    assert_in_output("预演报告已生成", stdout, "dry-run 成功", "stdout")
+    assert_in_output(batch_id, stdout, "批次 ID", "stdout")
+    print("[INFO] dry-run 通过 --profile 执行成功")
+
+    state_file = custom_state_dir / f"{batch_id}.json"
+    assert state_file.exists(), f"状态文件应写入 profile 指定目录: {state_file}"
+    print(f"[INFO] 状态文件已写入 profile state_dir: {state_file}")
+
+    log_file = custom_log_dir / f"{batch_id}.log"
+    assert log_file.exists(), f"日志文件应写入 profile 指定目录: {log_file}"
+    print(f"[INFO] 日志文件已写入 profile log_dir: {log_file}")
+
+    report_files = list(custom_report_dir.glob(f"{batch_id}_*"))
+    assert len(report_files) > 0, f"报告文件应写入 profile 指定目录: {custom_report_dir}"
+    print(f"[INFO] 报告文件已写入 profile report_dir: {len(report_files)} 个")
+
+    code, stdout, stderr = run_cli([
+        "list",
+        "--profile", "custom_dirs",
+    ])
+    assert_exit_code(code, 0, "list via profile 退出码", stdout, stderr)
+    assert_in_output(batch_id, stdout, "list 显示批次", "stdout")
+    print("[INFO] list 通过 --profile 正确识别批次")
+
+    code, stdout, stderr = run_cli([
+        "show",
+        "--batch-id", batch_id,
+        "--profile", "custom_dirs",
+    ])
+    assert_exit_code(code, 0, "show via profile 退出码", stdout, stderr)
+    assert_in_output(batch_id, stdout, "show 显示批次", "stdout")
+    print("[INFO] show 通过 --profile 正确显示批次")
+
+    code, stdout, stderr = run_cli([
+        "logs",
+        "--batch-id", batch_id,
+        "--profile", "custom_dirs",
+    ])
+    assert_exit_code(code, 0, "logs via profile 退出码", stdout, stderr)
+    assert_in_output(batch_id, stdout, "logs 显示批次", "stdout")
+    print("[INFO] logs 通过 --profile 正确读取日志")
+
+    run_cli([
+        "profile", "use",
+        "--name", "custom_dirs",
+    ])
+
+    code, stdout, stderr = run_cli([
+        "list",
+    ])
+    assert_exit_code(code, 0, "list 默认档案退出码", stdout, stderr)
+    assert_in_output(batch_id, stdout, "list 默认档案显示批次", "stdout")
+    print("[INFO] list 通过默认档案（profile use）正确识别批次")
+
+    export_target_dir = EXAMPLES_DIR / "snapshots_profile_test"
+    if export_target_dir.exists():
+        shutil.rmtree(export_target_dir, ignore_errors=True)
+
+    code, stdout, stderr = run_cli([
+        "batch", "export",
+        "--batch-id", batch_id,
+        "--profile", "custom_dirs",
+        "--output-dir", str(export_target_dir),
+    ])
+    assert_exit_code(code, 0, "batch export via profile 退出码", stdout, stderr)
+    assert_in_output("快照已导出", stdout, "导出成功", "stdout")
+    print("[INFO] batch export 通过 --profile 正确找到批次")
+
+    snapshot_file = export_target_dir / f"{batch_id}_snapshot.json"
+    assert snapshot_file.exists(), "快照文件应存在"
+
+    import logging
+    for handler in list(logging.root.handlers):
+        try:
+            if isinstance(handler, logging.FileHandler):
+                handler.close()
+                logging.root.removeHandler(handler)
+        except Exception:
+            pass
+    for logname in ["", "asset_retag"]:
+        lg = logging.getLogger(logname)
+        for handler in list(lg.handlers):
+            try:
+                if isinstance(handler, logging.FileHandler):
+                    handler.close()
+                    lg.removeHandler(handler)
+            except Exception:
+                pass
+
+    pm = _get_profile_manager()
+    from asset_retag.state import StateManager
+    from asset_retag.models import AppConfig, OperationType
+    cleanup_cfg = AppConfig(
+        source_root=EXAMPLES_DIR / "source",
+        target_root=EXAMPLES_DIR / "target",
+        operation=OperationType.COPY,
+        state_dir=custom_state_dir,
+        log_dir=custom_log_dir,
+        report_dir=custom_report_dir,
+    )
+    try:
+        StateManager(cleanup_cfg).delete_batch(batch_id)
+    except Exception:
+        pass
+    _cleanup_profiles()
+
+    for d in [custom_state_dir, custom_log_dir, custom_report_dir, export_target_dir]:
+        if d.exists():
+            try:
+                shutil.rmtree(d, ignore_errors=True)
+            except Exception:
+                pass
+    try:
+        profile_config.unlink()
+    except Exception:
+        pass
+
+    print("[PASS] 测试21完成 - 批次命令通过 profile 正确路由 state/log/report")
+
+
 def main() -> int:
     """主测试函数"""
     print("=" * 70)
@@ -1364,6 +1885,11 @@ def main() -> int:
         test_14_snapshot_imported_batch_usability,
         test_15_snapshot_atomic_overwrite_integrity,
         test_16_snapshot_import_log_readability_and_rollback_dryrun,
+        test_17_profile_add_list_show,
+        test_18_profile_use_undo_use,
+        test_19_profile_remove,
+        test_20_profile_export_import_conflict,
+        test_21_profile_in_batch_commands,
     ]
 
     passed = 0
@@ -1372,6 +1898,7 @@ def main() -> int:
     for test in tests:
         try:
             cleanup_test_state()
+            _cleanup_profiles()
             test()
             passed += 1
         except Exception as e:
@@ -1406,6 +1933,7 @@ def main() -> int:
     time.sleep(0.1)
     try:
         cleanup_test_state()
+        _cleanup_profiles()
     except Exception:
         pass
 
