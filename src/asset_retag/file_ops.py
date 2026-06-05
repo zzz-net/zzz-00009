@@ -28,6 +28,35 @@ class FileLockedError(FileOperationError):
     pass
 
 
+class FileOwnershipError(FileOperationError):
+    """文件所有权校验错误 - 目标文件不是本批次生成的"""
+    pass
+
+
+def _get_file_fingerprint(path: Path) -> Optional[Dict]:
+    """获取文件指纹（大小 + 修改时间），用于校验文件所有权"""
+    if not path.exists():
+        return None
+    try:
+        stat = path.stat()
+        return {
+            "st_size": stat.st_size,
+            "st_mtime": stat.st_mtime,
+        }
+    except OSError:
+        return None
+
+
+def _fingerprint_match(fp1: Optional[Dict], fp2: Optional[Dict]) -> bool:
+    """比较两个文件指纹是否匹配"""
+    if fp1 is None or fp2 is None:
+        return False
+    return (
+        fp1.get("st_size") == fp2.get("st_size")
+        and abs(fp1.get("st_mtime", 0) - fp2.get("st_mtime", 0)) < 1.0
+    )
+
+
 class FileOperationResult:
     """文件操作结果"""
 
@@ -224,10 +253,13 @@ class FileOperator:
         else:
             raise FileOperationError(f"未知操作类型: {operation}")
 
+        target_fingerprint = _get_file_fingerprint(target)
+
         return {
             "operation": operation.value,
             "archived_path": str(archived_path) if archived_path else None,
             "timestamp": datetime.now().isoformat(),
+            "target_fingerprint": target_fingerprint,
         }
 
     def _archive_source(self, source: Path, mapping, photo_index: int) -> Path:
@@ -310,11 +342,13 @@ class FileOperator:
                 archived_path = Path(op["archived_path"]) if op.get("archived_path") else None
                 operation = op.get("operation", "copy")
 
+                expected_fingerprint = op.get("target_fingerprint")
                 rollback_result = self._rollback_single_operation(
                     source_path=source_path,
                     target_path=target_path,
                     archived_path=archived_path,
                     operation=operation,
+                    expected_fingerprint=expected_fingerprint,
                 )
 
                 rollback_result.update({
@@ -337,6 +371,16 @@ class FileOperator:
                 })
                 raise FileOperationError(f"回滚因文件锁定而中止: {e}") from e
 
+            except FileOwnershipError as e:
+                logger.error(f"回滚时检测到文件所有权冲突，立即停止: {e}")
+                failed_ops.append({
+                    **op,
+                    "error": str(e),
+                    "rollback_stopped": True,
+                    "timestamp": datetime.now().isoformat(),
+                })
+                raise  # 直接抛出 FileOwnershipError，让上层处理
+
             except Exception as e:
                 logger.warning(f"回滚操作失败: {e}")
                 failed_ops.append({
@@ -353,12 +397,15 @@ class FileOperator:
         target_path: Path,
         archived_path: Optional[Path],
         operation: str,
+        expected_fingerprint: Optional[Dict] = None,
     ) -> Dict:
         """回滚单个操作
 
-        安全检查：
-        1. 检查目标文件是否被锁定 - 如果锁定，立即抛出 FileLockedError
-        2. 不覆盖任何已有文件
+        安全检查（按顺序）：
+        1. 检查目标文件是否存在
+        2. 如果存在，校验文件所有权（指纹匹配）- 不匹配则停止，绝不删除
+        3. 检查目标文件是否被锁定 - 如果锁定，立即抛出 FileLockedError
+        4. 不覆盖任何已有文件
         """
         if self.dry_run:
             return {
@@ -366,6 +413,18 @@ class FileOperator:
                 "dry_run": True,
                 "timestamp": datetime.now().isoformat(),
             }
+
+        if target_path.exists():
+            if expected_fingerprint:
+                actual_fingerprint = _get_file_fingerprint(target_path)
+                if not _fingerprint_match(actual_fingerprint, expected_fingerprint):
+                    raise FileOwnershipError(
+                        f"目标文件所有权校验失败，可能已被无关文件占用或篡改。\n"
+                        f"  目标路径: {target_path}\n"
+                        f"  预期大小: {expected_fingerprint.get('st_size', 'N/A')} 字节\n"
+                        f"  实际大小: {actual_fingerprint.get('st_size', 'N/A') if actual_fingerprint else 'N/A'} 字节\n"
+                        f"为保护您的数据，回滚已停止，未删除任何文件。"
+                    )
 
         locked, lock_reason = self.is_file_locked(target_path)
         if locked:

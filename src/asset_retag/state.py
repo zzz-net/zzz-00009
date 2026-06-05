@@ -281,6 +281,41 @@ class StateManager:
                 temp_file.unlink()
             raise StateError(f"保存状态失败: {e}") from e
 
+    def delete_batch(self, batch_id: str) -> None:
+        """删除批次及其相关文件（用于清理失败的半成品批次）"""
+        import logging
+        for handler in logging.root.handlers[:]:
+            try:
+                handler.close()
+                logging.root.removeHandler(handler)
+            except:
+                pass
+
+        state_file = self._get_state_file(batch_id)
+        log_file = self._get_log_file(batch_id)
+
+        deleted = []
+        failed = []
+
+        if state_file.exists():
+            try:
+                state_file.unlink()
+                deleted.append(str(state_file))
+            except Exception as e:
+                failed.append(f"{state_file}: {e}")
+
+        if log_file.exists():
+            try:
+                log_file.unlink()
+                deleted.append(str(log_file))
+            except Exception as e:
+                failed.append(f"{log_file}: {e}")
+
+        if deleted:
+            logger.info(f"已清理批次 {batch_id} 的文件: {', '.join(deleted)}")
+        if failed:
+            logger.warning(f"未能清理以下文件（可能被占用）: {', '.join(failed)}")
+
     def _log(self, batch_id: str, message: str) -> None:
         """写入日志"""
         log_file = self._get_log_file(batch_id)

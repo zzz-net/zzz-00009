@@ -6,6 +6,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import sys
+import os
+
+# Windows 终端编码适配
+if os.name == "nt":
+    sys.stdout.reconfigure(encoding="utf-8") if hasattr(sys.stdout, "reconfigure") else None
+    sys.stderr.reconfigure(encoding="utf-8") if hasattr(sys.stderr, "reconfigure") else None
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+    except:
+        pass
+
 from .models import (
     AppConfig,
     BatchState,
@@ -14,6 +27,15 @@ from .models import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _safe_print(message: str = "") -> None:
+    """安全打印，处理编码失败时降级"""
+    try:
+        print(message)
+    except UnicodeEncodeError:
+        ascii_msg = message.encode("ascii", errors="replace").decode("ascii")
+        print(ascii_msg)
 
 
 class ReportError(Exception):
@@ -135,46 +157,46 @@ class Reporter:
         items_no_photos = total_items - items_with_photos
         total_photos = sum(len(item.photos) for item in plan.items)
 
-        print("\n" + "=" * 60)
-        print("执行计划摘要")
-        print("=" * 60)
-        print(f"批次 ID: {plan.batch_id}")
-        print(f"生成时间: {plan.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
-        print("-" * 60)
-        print(f"总映射数:      {total_items}")
-        print(f"有照片的映射:  {items_with_photos}")
-        print(f"无照片的映射:  {items_no_photos}")
-        print(f"总照片数:      {total_photos}")
-        print(f"冲突数:        {len(plan.conflicts)}")
-        print(f"缺证据数:      {len(plan.missing_evidence)}")
-        print(f"未登记目录数:  {len(plan.unregistered)}")
-        print(f"错误数:        {len(plan.errors)}")
+        _safe_print("\n" + "=" * 60)
+        _safe_print("执行计划摘要")
+        _safe_print("=" * 60)
+        _safe_print(f"批次 ID: {plan.batch_id}")
+        _safe_print(f"生成时间: {plan.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
+        _safe_print("-" * 60)
+        _safe_print(f"总映射数:      {total_items}")
+        _safe_print(f"有照片的映射:  {items_with_photos}")
+        _safe_print(f"无照片的映射:  {items_no_photos}")
+        _safe_print(f"总照片数:      {total_photos}")
+        _safe_print(f"冲突数:        {len(plan.conflicts)}")
+        _safe_print(f"缺证据数:      {len(plan.missing_evidence)}")
+        _safe_print(f"未登记目录数:  {len(plan.unregistered)}")
+        _safe_print(f"错误数:        {len(plan.errors)}")
 
         if plan.conflicts:
-            print("\n" + "-" * 60)
-            print("冲突详情:")
+            _safe_print("\n" + "-" * 60)
+            _safe_print("冲突详情:")
             for i, conflict in enumerate(plan.conflicts, 1):
-                print(f"  {i}. [{conflict.get('type', 'unknown')}] {conflict.get('message', '')}")
+                _safe_print(f"  {i}. [{conflict.get('type', 'unknown')}] {conflict.get('message', '')}")
 
         if plan.missing_evidence:
-            print("\n" + "-" * 60)
-            print("缺证据详情:")
+            _safe_print("\n" + "-" * 60)
+            _safe_print("缺证据详情:")
             for i, item in enumerate(plan.missing_evidence, 1):
-                print(f"  {i}. {item['old_id']} -> {item['new_tag']}: {item.get('reason', '')}")
+                _safe_print(f"  {i}. {item['old_id']} -> {item['new_tag']}: {item.get('reason', '')}")
 
         if plan.unregistered:
-            print("\n" + "-" * 60)
-            print("未登记目录:")
+            _safe_print("\n" + "-" * 60)
+            _safe_print("未登记目录:")
             for i, item in enumerate(plan.unregistered, 1):
-                print(f"  {i}. {item['directory']} ({item['photo_count']} 个照片)")
+                _safe_print(f"  {i}. {item['directory']} ({item['photo_count']} 个照片)")
 
         if plan.errors:
-            print("\n" + "-" * 60)
-            print("错误详情:")
+            _safe_print("\n" + "-" * 60)
+            _safe_print("错误详情:")
             for i, error in enumerate(plan.errors, 1):
-                print(f"  {i}. {error}")
+                _safe_print(f"  {i}. {error}")
 
-        print("=" * 60 + "\n")
+        _safe_print("=" * 60 + "\n")
 
     def print_execution_summary(
         self,
@@ -186,25 +208,25 @@ class Reporter:
         success_count = len(successful_ops)
         fail_count = len(failed_ops)
 
-        print("\n" + "=" * 60)
-        print("执行结果摘要")
-        print("=" * 60)
-        print(f"总操作数: {total}")
-        print(f"成功:     {success_count}")
-        print(f"失败:     {fail_count}")
+        _safe_print("\n" + "=" * 60)
+        _safe_print("执行结果摘要")
+        _safe_print("=" * 60)
+        _safe_print(f"总操作数: {total}")
+        _safe_print(f"成功:     {success_count}")
+        _safe_print(f"失败:     {fail_count}")
         if total > 0:
-            print(f"成功率:   {success_count / total * 100:.1f}%")
+            _safe_print(f"成功率:   {success_count / total * 100:.1f}%")
 
         if failed_ops:
-            print("\n失败详情:")
+            _safe_print("\n失败详情:")
             for i, failure in enumerate(failed_ops, 1):
                 new_tag = failure.get("new_tag", "unknown")
                 source = failure.get("source_path", "unknown")
                 error = failure.get("error", "unknown error")
-                print(f"  {i}. [{new_tag}] {source}")
-                print(f"     错误: {error}")
+                _safe_print(f"  {i}. [{new_tag}] {source}")
+                _safe_print(f"     错误: {error}")
 
-        print("=" * 60 + "\n")
+        _safe_print("=" * 60 + "\n")
 
     def print_rollback_summary(
         self,
@@ -216,113 +238,113 @@ class Reporter:
         success_count = len(rolled_back_ops)
         fail_count = len(failed_ops)
 
-        print("\n" + "=" * 60)
-        print("回滚结果摘要")
-        print("=" * 60)
-        print(f"总操作数: {total}")
-        print(f"已回滚:   {success_count}")
-        print(f"失败:     {fail_count}")
+        _safe_print("\n" + "=" * 60)
+        _safe_print("回滚结果摘要")
+        _safe_print("=" * 60)
+        _safe_print(f"总操作数: {total}")
+        _safe_print(f"已回滚:   {success_count}")
+        _safe_print(f"失败:     {fail_count}")
         if total > 0:
-            print(f"成功率:   {success_count / total * 100:.1f}%")
+            _safe_print(f"成功率:   {success_count / total * 100:.1f}%")
 
         stopped = any(f.get("rollback_stopped") for f in failed_ops)
         if stopped:
-            print("\n⚠️  回滚因文件锁定而中止，部分操作未完成回滚")
+            _safe_print("\n[WARN] 回滚因文件锁定而中止，部分操作未完成回滚")
 
         if failed_ops:
-            print("\n失败详情:")
+            _safe_print("\n失败详情:")
             for i, failure in enumerate(failed_ops, 1):
                 new_tag = failure.get("new_tag", "unknown")
                 target = failure.get("target_path", "unknown")
                 error = failure.get("error", "unknown error")
-                print(f"  {i}. [{new_tag}] {target}")
-                print(f"     错误: {error}")
+                _safe_print(f"  {i}. [{new_tag}] {target}")
+                _safe_print(f"     错误: {error}")
 
-        print("=" * 60 + "\n")
+        _safe_print("=" * 60 + "\n")
 
     def print_batch_list(self, batches: List[BatchState]) -> None:
         """打印批次列表"""
         if not batches:
-            print("\n暂无批次记录\n")
+            _safe_print("\n暂无批次记录\n")
             return
 
-        print("\n" + "=" * 100)
-        print(f"{'批次 ID':<32} {'状态':<16} {'创建时间':<20} {'更新时间':<20} {'操作数':<8}")
-        print("-" * 100)
+        _safe_print("\n" + "=" * 100)
+        _safe_print(f"{'批次 ID':<32} {'状态':<16} {'创建时间':<20} {'更新时间':<20} {'操作数':<8}")
+        _safe_print("-" * 100)
 
         for batch in batches:
             status_icon = self._get_status_icon(batch.status)
             created = batch.created_at.strftime("%Y-%m-%d %H:%M")
             updated = batch.updated_at.strftime("%Y-%m-%d %H:%M")
             op_count = len(batch.operations)
-            print(
+            _safe_print(
                 f"{batch.batch_id:<32} {status_icon} {batch.status.value:<14} "
                 f"{created:<20} {updated:<20} {op_count:<8}"
             )
 
-        print("=" * 100 + "\n")
+        _safe_print("=" * 100 + "\n")
 
     def print_batch_detail(self, batch: BatchState, show_logs: bool = False) -> None:
         """打印批次详情"""
-        print("\n" + "=" * 80)
-        print("批次详情")
-        print("=" * 80)
-        print(f"批次 ID:    {batch.batch_id}")
-        print(f"状态:       {self._get_status_icon(batch.status)} {batch.status.value}")
-        print(f"创建时间:   {batch.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
-        print(f"更新时间:   {batch.updated_at.strftime('%Y-%m-%d %H:%M:%S')}")
+        _safe_print("\n" + "=" * 80)
+        _safe_print("批次详情")
+        _safe_print("=" * 80)
+        _safe_print(f"批次 ID:    {batch.batch_id}")
+        _safe_print(f"状态:       {self._get_status_icon(batch.status)} {batch.status.value}")
+        _safe_print(f"创建时间:   {batch.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
+        _safe_print(f"更新时间:   {batch.updated_at.strftime('%Y-%m-%d %H:%M:%S')}")
 
         if batch.plan:
             item_count = len(batch.plan.get("items", []))
             photo_count = sum(item.get("photo_count", 0) for item in batch.plan.get("items", []))
-            print(f"计划项目:   {item_count} 个映射, {photo_count} 个照片")
+            _safe_print(f"计划项目:   {item_count} 个映射, {photo_count} 个照片")
 
-        print(f"操作记录:   {len(batch.operations)} 条")
+        _safe_print(f"操作记录:   {len(batch.operations)} 条")
         if batch.errors:
-            print(f"错误记录:   {len(batch.errors)} 条")
+            _safe_print(f"错误记录:   {len(batch.errors)} 条")
 
         if batch.plan and batch.plan.get("conflicts"):
-            print(f"冲突数:     {len(batch.plan['conflicts'])}")
+            _safe_print(f"冲突数:     {len(batch.plan['conflicts'])}")
         if batch.plan and batch.plan.get("missing_evidence"):
-            print(f"缺证据数:   {len(batch.plan['missing_evidence'])}")
+            _safe_print(f"缺证据数:   {len(batch.plan['missing_evidence'])}")
 
         if batch.config:
-            print("\n配置摘要:")
-            print(f"  源目录:   {batch.config.get('source_root', 'N/A')}")
-            print(f"  目标目录: {batch.config.get('target_root', 'N/A')}")
-            print(f"  操作:     {batch.config.get('operation', 'N/A')}")
-            print(f"  CSV 文件: {batch.config.get('csv_path', 'N/A')}")
+            _safe_print("\n配置摘要:")
+            _safe_print(f"  源目录:   {batch.config.get('source_root', 'N/A')}")
+            _safe_print(f"  目标目录: {batch.config.get('target_root', 'N/A')}")
+            _safe_print(f"  操作:     {batch.config.get('operation', 'N/A')}")
+            _safe_print(f"  CSV 文件: {batch.config.get('csv_path', 'N/A')}")
 
         if show_logs:
-            print("\n最近日志:")
+            _safe_print("\n最近日志:")
             log_file = Path(batch.config.get("log_dir", "")) / f"{batch.batch_id}.log" \
                 if batch.config else None
             if log_file and log_file.exists():
                 with open(log_file, "r", encoding="utf-8") as f:
                     lines = f.readlines()
                     for line in lines[-20:]:
-                        print(f"  {line.rstrip()}")
+                        _safe_print(f"  {line.rstrip()}")
             else:
-                print("  (无日志文件)")
+                _safe_print("  (无日志文件)")
 
-        print("=" * 80 + "\n")
+        _safe_print("=" * 80 + "\n")
 
     @staticmethod
     def _get_status_icon(status: BatchStatus) -> str:
-        """获取状态图标"""
+        """获取状态图标（ASCII 版本，避免编码问题）"""
         icons = {
-            BatchStatus.PENDING: "⏳",
-            BatchStatus.PLANNING: "📝",
-            BatchStatus.PLANNED: "✅",
-            BatchStatus.EXECUTING: "⚡",
-            BatchStatus.COMPLETED: "✅",
-            BatchStatus.PARTIAL: "⚠️",
-            BatchStatus.FAILED: "❌",
-            BatchStatus.ROLLING_BACK: "↩️",
-            BatchStatus.ROLLED_BACK: "↩️",
-            BatchStatus.ROLLBACK_FAILED: "❌",
+            BatchStatus.PENDING: "[PEND]",
+            BatchStatus.PLANNING: "[PLAN]",
+            BatchStatus.PLANNED: "[OK]",
+            BatchStatus.EXECUTING: "[RUN]",
+            BatchStatus.COMPLETED: "[OK]",
+            BatchStatus.PARTIAL: "[WARN]",
+            BatchStatus.FAILED: "[ERR]",
+            BatchStatus.ROLLING_BACK: "[RBK]",
+            BatchStatus.ROLLED_BACK: "[RBK]",
+            BatchStatus.ROLLBACK_FAILED: "[ERR]",
         }
-        return icons.get(status, "❓")
+        return icons.get(status, "[?]")
 
     def _write_pending_csv(self, plan: ExecutionPlan, filename: str) -> Path:
         """写入待处理列表 CSV"""

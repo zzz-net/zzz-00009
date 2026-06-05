@@ -3,17 +3,46 @@ import logging
 import sys
 import traceback
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional, Tuple
 
 import click
 
+import os
+import sys
+
+# Windows 终端编码适配
+if os.name == "nt":
+    sys.stdout.reconfigure(encoding="utf-8") if hasattr(sys.stdout, "reconfigure") else None
+    sys.stderr.reconfigure(encoding="utf-8") if hasattr(sys.stderr, "reconfigure") else None
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleOutputCP(65001)
+    except:
+        pass
+
 from . import __version__
-from .file_ops import FileOperator, FileOperationError
+from .file_ops import FileOperator, FileOperationError, FileOwnershipError
 from .models import BatchStatus
 from .parser import ConfigParser, CSVMappingParser, ParseError
-from .planner import ExecutionPlanner
+from .planner import ExecutionPlanner, FatalPlanningError
 from .reporter import Reporter
 from .state import StateError, StateManager
+
+
+# 安全输出（替代 emoji，避免 Windows 编码问题）
+_ICON_OK = "[OK]"
+_ICON_WARN = "[WARN]"
+_ICON_ERR = "[ERR]"
+_ICON_INFO = "[INFO]"
+
+
+def _safe_echo(message: str, *args, **kwargs) -> None:
+    """安全输出，处理编码失败时降级"""
+    try:
+        click.echo(message, *args, **kwargs)
+    except UnicodeEncodeError:
+        ascii_msg = message.encode("ascii", errors="replace").decode("ascii")
+        click.echo(ascii_msg, *args, **kwargs)
 
 
 def setup_logging(log_dir: Path, batch_id: str, verbose: bool = False) -> None:
@@ -49,47 +78,81 @@ def main() -> None:
     pass
 
 
+def _classify_parse_errors(errors: List[str]) -> Tuple[List[str], List[str]]:
+    """分类解析错误：(致命错误, 非致命错误)
+
+    致命错误：照片目录不存在 - 必须中止
+    非致命错误：重复标签（已在 planner 中处理）、空字段、无效类型等 - 可询问用户
+    """
+    fatal = []
+    non_fatal = []
+    for err in errors:
+        if "照片目录不存在" in err or "photo_dir" in err.lower() and "not exist" in err.lower():
+            fatal.append(err)
+        else:
+            non_fatal.append(err)
+    return fatal, non_fatal
+
+
 @main.command()
 @click.option("--config", "-c", required=True, type=click.Path(exists=True, dir_okay=False), help="配置文件路径")
 @click.option("--mapping", "-m", required=True, type=click.Path(exists=True, dir_okay=False), help="CSV 映射文件路径")
 @click.option("--batch-id", "-b", help="指定批次 ID（不指定则自动生成）")
+@click.option("--skip-confirm", is_flag=True, help="跳过确认提示")
 @click.option("--verbose", "-v", is_flag=True, help="显示详细日志")
-def dry_run(config: str, mapping: str, batch_id: Optional[str], verbose: bool) -> None:
+def dry_run(config: str, mapping: str, batch_id: Optional[str], skip_confirm: bool, verbose: bool) -> None:
     """预演模式：生成报告，不修改任何资产文件"""
+    app_config = None
+    state_mgr = None
+    batch_created = False
+
     try:
         config_path = Path(config).resolve()
         mapping_path = Path(mapping).resolve()
 
         app_config = ConfigParser.parse(config_path)
+        state_mgr = StateManager(app_config)
 
+        # === 第一步：先解析，不创建批次 ===
+        _safe_echo(f"{_ICON_INFO} 正在解析 CSV 映射文件...")
+        mappings, parse_errors = CSVMappingParser.parse(mapping_path, app_config.source_root)
+
+        # 检查致命解析错误（照片目录不存在）
+        fatal_parse_errors, non_fatal_parse_errors = _classify_parse_errors(parse_errors)
+        if fatal_parse_errors:
+            _safe_echo(f"\n{_ICON_ERR} CSV 解析发现 {len(fatal_parse_errors)} 个致命错误：", err=True)
+            for err in fatal_parse_errors:
+                _safe_echo(f"   - {err}", err=True)
+            _safe_echo(f"\n{_ICON_ERR} 致命错误必须修复后才能继续。预演已中止，未创建任何批次状态或报告。", err=True)
+            sys.exit(1)
+
+        # 非致命解析错误可询问用户
+        if non_fatal_parse_errors:
+            _safe_echo(f"\n{_ICON_WARN} CSV 解析发现 {len(non_fatal_parse_errors)} 个问题：")
+            for err in non_fatal_parse_errors[:10]:
+                _safe_echo(f"   - {err}")
+            if len(non_fatal_parse_errors) > 10:
+                _safe_echo(f"   ... 还有 {len(non_fatal_parse_errors) - 10} 个问题")
+            if not skip_confirm and not click.confirm("\n是否继续处理有效条目？", default=True):
+                _safe_echo("已取消。")
+                sys.exit(0)
+
+        if not mappings:
+            _safe_echo(f"{_ICON_ERR} 没有有效的映射条目，无法继续", err=True)
+            sys.exit(1)
+
+        # === 第二步：解析成功后再创建批次 ===
         if not batch_id:
-            state_mgr = StateManager(app_config)
             batch_id = state_mgr.generate_batch_id()
 
         setup_logging(app_config.log_dir, batch_id, verbose)
         logger = logging.getLogger(__name__)
         logger.info(f"开始预演模式，批次 ID: {batch_id}")
 
-        state_mgr = StateManager(app_config)
         config_dict = state_mgr.config_to_dict(app_config, mapping_path)
         state_mgr.create_batch(batch_id, config_dict)
+        batch_created = True
         state_mgr.update_status(batch_id, BatchStatus.PLANNING, "开始预演计划")
-
-        mappings, parse_errors = CSVMappingParser.parse(mapping_path, app_config.source_root)
-
-        if parse_errors:
-            click.echo(f"\n⚠️  CSV 解析发现 {len(parse_errors)} 个错误：")
-            for err in parse_errors[:10]:
-                click.echo(f"   - {err}")
-            if len(parse_errors) > 10:
-                click.echo(f"   ... 还有 {len(parse_errors) - 10} 个错误")
-            if not click.confirm("\n是否继续处理有效条目？", default=True):
-                state_mgr.update_status(batch_id, BatchStatus.FAILED, "用户取消")
-                click.echo("已取消。")
-                return
-
-        if not mappings:
-            raise click.ClickException("没有有效的映射条目，无法继续")
 
         planner = ExecutionPlanner(app_config)
         plan = planner.generate_plan(mappings, batch_id)
@@ -102,29 +165,43 @@ def dry_run(config: str, mapping: str, batch_id: Optional[str], verbose: bool) -
 
         reports = reporter.generate_dry_run_report(plan, batch_id)
 
-        click.echo("\n📋 预演报告已生成：")
+        _safe_echo(f"\n{_ICON_OK} 预演报告已生成：")
         for name, path in reports.items():
-            click.echo(f"   - {name}: {path}")
+            _safe_echo(f"   - {name}: {path}")
 
-        has_issues = bool(plan.conflicts or plan.missing_evidence or plan.unregistered or plan.errors)
+        has_issues = bool(plan.missing_evidence or plan.unregistered or plan.errors)
         if has_issues:
-            click.echo("\n⚠️  检测到问题，请查看报告后决定是否继续执行")
+            _safe_echo(f"\n{_ICON_WARN} 检测到问题，请查看报告后决定是否继续执行")
         else:
-            click.echo("\n✅ 预演完成，未检测到问题，可以执行实际操作")
+            _safe_echo(f"\n{_ICON_OK} 预演完成，未检测到致命问题，可以执行实际操作")
 
-        click.echo(f"\n批次 ID: {batch_id}")
-        click.echo(f"执行命令: asset-retag run -c {config} -m {mapping} --batch-id {batch_id}")
+        _safe_echo(f"\n批次 ID: {batch_id}")
+        _safe_echo(f"执行命令: asset-retag run -c {config} -m {mapping} --batch-id {batch_id}")
 
+    except FatalPlanningError as e:
+        _safe_echo(f"\n{_ICON_ERR} 检测到致命冲突，预演已中止：", err=True)
+        _safe_echo(str(e), err=True)
+        # 致命冲突也需要清理批次
+        if state_mgr and batch_created and batch_id:
+            state_mgr.delete_batch(batch_id)
+            _safe_echo(f"\n{_ICON_INFO} 已清理半成品批次状态和日志", err=True)
+        sys.exit(1)
     except ParseError as e:
-        click.echo(f"\n❌ 解析错误: {e}", err=True)
+        _safe_echo(f"\n{_ICON_ERR} 解析错误: {e}", err=True)
+        if state_mgr and batch_created and batch_id:
+            state_mgr.delete_batch(batch_id)
         sys.exit(1)
     except StateError as e:
-        click.echo(f"\n❌ 状态错误: {e}", err=True)
+        _safe_echo(f"\n{_ICON_ERR} 状态错误: {e}", err=True)
+        if state_mgr and batch_created and batch_id:
+            state_mgr.delete_batch(batch_id)
         sys.exit(1)
     except Exception as e:
-        click.echo(f"\n❌ 预演失败: {e}", err=True)
+        _safe_echo(f"\n{_ICON_ERR} 预演失败: {e}", err=True)
         if verbose:
             traceback.print_exc()
+        if state_mgr and batch_created and batch_id:
+            state_mgr.delete_batch(batch_id)
         sys.exit(1)
 
 
@@ -136,25 +213,68 @@ def dry_run(config: str, mapping: str, batch_id: Optional[str], verbose: bool) -
 @click.option("--verbose", "-v", is_flag=True, help="显示详细日志")
 def run(config: str, mapping: str, batch_id: Optional[str], skip_confirm: bool, verbose: bool) -> None:
     """执行资产标签重贴批处理"""
+    app_config = None
+    state_mgr = None
+    batch_created = False
+
     try:
         config_path = Path(config).resolve()
         mapping_path = Path(mapping).resolve()
 
         app_config = ConfigParser.parse(config_path)
-
         state_mgr = StateManager(app_config)
 
+        # === 第一步：先解析，不创建批次 ===
+        _safe_echo(f"{_ICON_INFO} 正在解析 CSV 映射文件...")
+        mappings, parse_errors = CSVMappingParser.parse(mapping_path, app_config.source_root)
+
+        # 检查致命解析错误（照片目录不存在）
+        fatal_parse_errors, non_fatal_parse_errors = _classify_parse_errors(parse_errors)
+        if fatal_parse_errors:
+            _safe_echo(f"\n{_ICON_ERR} CSV 解析发现 {len(fatal_parse_errors)} 个致命错误：", err=True)
+            for err in fatal_parse_errors:
+                _safe_echo(f"   - {err}", err=True)
+            _safe_echo(f"\n{_ICON_ERR} 致命错误必须修复后才能继续。已中止，未创建任何批次状态或报告。", err=True)
+            sys.exit(1)
+
+        # 非致命解析错误可询问用户
+        if non_fatal_parse_errors:
+            _safe_echo(f"\n{_ICON_WARN} CSV 解析发现 {len(non_fatal_parse_errors)} 个问题：")
+            for err in non_fatal_parse_errors[:10]:
+                _safe_echo(f"   - {err}")
+            if len(non_fatal_parse_errors) > 10:
+                _safe_echo(f"   ... 还有 {len(non_fatal_parse_errors) - 10} 个问题")
+            if not skip_confirm and not click.confirm("\n是否继续处理有效条目？", default=True):
+                _safe_echo("已取消。")
+                sys.exit(0)
+
+        if not mappings:
+            _safe_echo(f"{_ICON_ERR} 没有有效的映射条目，无法继续", err=True)
+            sys.exit(1)
+
+        # === 第二步：解析成功后再创建或复用批次 ===
+        is_new_batch = False
+        batch_exists = False
         if not batch_id:
             batch_id = state_mgr.generate_batch_id()
             is_new_batch = True
         else:
-            is_new_batch = False
-            if not state_mgr.can_execute(batch_id):
+            # 检查批次是否已存在
+            try:
+                state_mgr.get_batch(batch_id)
+                batch_exists = True
+            except StateError:
+                batch_exists = False
+                is_new_batch = True
+
+            if batch_exists and not state_mgr.can_execute(batch_id):
                 batch_state = state_mgr.get_batch(batch_id)
-                raise click.ClickException(
-                    f"批次 {batch_id} 状态为 '{batch_state.status}'，无法执行。"
-                    f"请先回滚或使用新的批次 ID。"
+                _safe_echo(
+                    f"{_ICON_ERR} 批次 {batch_id} 状态为 '{batch_state.status}'，无法执行。"
+                    f"请先回滚或使用新的批次 ID。",
+                    err=True
                 )
+                sys.exit(1)
 
         setup_logging(app_config.log_dir, batch_id, verbose)
         logger = logging.getLogger(__name__)
@@ -163,23 +283,8 @@ def run(config: str, mapping: str, batch_id: Optional[str], skip_confirm: bool, 
         if is_new_batch:
             config_dict = state_mgr.config_to_dict(app_config, mapping_path)
             state_mgr.create_batch(batch_id, config_dict)
+            batch_created = True
             state_mgr.update_status(batch_id, BatchStatus.PLANNING, "开始执行计划")
-
-        mappings, parse_errors = CSVMappingParser.parse(mapping_path, app_config.source_root)
-
-        if parse_errors:
-            click.echo(f"\n⚠️  CSV 解析发现 {len(parse_errors)} 个错误：")
-            for err in parse_errors[:10]:
-                click.echo(f"   - {err}")
-            if len(parse_errors) > 10:
-                click.echo(f"   ... 还有 {len(parse_errors) - 10} 个错误")
-            if not skip_confirm and not click.confirm("\n是否继续处理有效条目？", default=True):
-                state_mgr.update_status(batch_id, BatchStatus.FAILED, "用户取消")
-                click.echo("已取消。")
-                return
-
-        if not mappings:
-            raise click.ClickException("没有有效的映射条目，无法继续")
 
         planner = ExecutionPlanner(app_config)
         plan = planner.generate_plan(mappings, batch_id)
@@ -191,23 +296,23 @@ def run(config: str, mapping: str, batch_id: Optional[str], skip_confirm: bool, 
 
         executable_items = [item for item in plan.items if item.status == "planned" and item.photos]
         if not executable_items:
-            click.echo("\n⚠️  没有可执行的项目（所有映射都没有照片或有冲突）")
+            _safe_echo(f"\n{_ICON_WARN} 没有可执行的项目（所有映射都没有照片或有冲突）")
             state_mgr.update_status(batch_id, BatchStatus.FAILED, "无可执行项目")
-            return
+            sys.exit(2)
 
         if not skip_confirm:
-            click.echo(f"\n将处理 {len(executable_items)} 个映射，共 {sum(len(i.photos) for i in executable_items)} 个文件")
+            _safe_echo(f"\n将处理 {len(executable_items)} 个映射，共 {sum(len(i.photos) for i in executable_items)} 个文件")
             if not click.confirm("确认执行？此操作将修改文件系统", default=False):
                 state_mgr.update_status(batch_id, BatchStatus.FAILED, "用户取消")
-                click.echo("已取消。")
-                return
+                _safe_echo("已取消。")
+                sys.exit(0)
 
         state_mgr.update_status(batch_id, BatchStatus.EXECUTING, "开始执行文件操作")
 
         operator = FileOperator(app_config, dry_run=False)
 
         def progress_callback(current: int, total: int, message: str) -> None:
-            click.echo(f"  [{current}/{total}] {message}")
+            _safe_echo(f"  [{current}/{total}] {message}")
 
         successful_ops, failed_ops = operator.execute_plan(plan, on_progress=progress_callback)
 
@@ -239,32 +344,45 @@ def run(config: str, mapping: str, batch_id: Optional[str], skip_confirm: bool, 
             plan, batch_id, successful_ops, failed_ops, final_status
         )
 
-        click.echo("\n📋 执行报告已生成：")
+        _safe_echo(f"\n{_ICON_OK} 执行报告已生成：")
         for name, path in reports.items():
-            click.echo(f"   - {name}: {path}")
+            _safe_echo(f"   - {name}: {path}")
 
-        click.echo(f"\n批次 ID: {batch_id}")
+        _safe_echo(f"\n批次 ID: {batch_id}")
         if final_status != BatchStatus.COMPLETED:
-            click.echo(f"如需回滚: asset-retag rollback --batch-id {batch_id}")
+            _safe_echo(f"如需回滚: asset-retag rollback --batch-id {batch_id}")
 
         if final_status in (BatchStatus.FAILED, BatchStatus.PARTIAL):
             sys.exit(2)
 
+    except FatalPlanningError as e:
+        _safe_echo(f"\n{_ICON_ERR} 检测到致命冲突，执行已中止：", err=True)
+        _safe_echo(str(e), err=True)
+        if state_mgr and batch_created and batch_id:
+            state_mgr.delete_batch(batch_id)
+            _safe_echo(f"\n{_ICON_INFO} 已清理半成品批次状态和日志", err=True)
+        sys.exit(1)
     except ParseError as e:
-        click.echo(f"\n❌ 解析错误: {e}", err=True)
+        _safe_echo(f"\n{_ICON_ERR} 解析错误: {e}", err=True)
+        if state_mgr and batch_created and batch_id:
+            state_mgr.delete_batch(batch_id)
         sys.exit(1)
     except StateError as e:
-        click.echo(f"\n❌ 状态错误: {e}", err=True)
+        _safe_echo(f"\n{_ICON_ERR} 状态错误: {e}", err=True)
+        if state_mgr and batch_created and batch_id:
+            state_mgr.delete_batch(batch_id)
         sys.exit(1)
     except FileOperationError as e:
-        click.echo(f"\n❌ 文件操作错误: {e}", err=True)
+        _safe_echo(f"\n{_ICON_ERR} 文件操作错误: {e}", err=True)
         if verbose:
             traceback.print_exc()
         sys.exit(1)
     except Exception as e:
-        click.echo(f"\n❌ 执行失败: {e}", err=True)
+        _safe_echo(f"\n{_ICON_ERR} 执行失败: {e}", err=True)
         if verbose:
             traceback.print_exc()
+        if state_mgr and batch_created and batch_id:
+            state_mgr.delete_batch(batch_id)
         sys.exit(1)
 
 
@@ -303,14 +421,14 @@ def rollback(batch_id: str, dry_run: bool, skip_confirm: bool, verbose: bool) ->
 
         logger.info(f"开始回滚批次 {batch_id}，共 {len(operations)} 个操作")
 
-        click.echo(f"\n批次 ID: {batch_id}")
-        click.echo(f"当前状态: {batch_state.status.value}")
-        click.echo(f"操作记录数: {len(operations)}")
-        click.echo(f"模式: {'预演' if dry_run else '实际执行'}")
+        _safe_echo(f"\n批次 ID: {batch_id}")
+        _safe_echo(f"当前状态: {batch_state.status.value}")
+        _safe_echo(f"操作记录数: {len(operations)}")
+        _safe_echo(f"模式: {'预演' if dry_run else '实际执行'}")
 
         if not skip_confirm:
             if not click.confirm("\n确认回滚？此操作将撤销之前的文件操作", default=False):
-                click.echo("已取消。")
+                _safe_echo("已取消。")
                 return
 
         state_mgr.update_status(batch_id, BatchStatus.ROLLING_BACK, "开始回滚")
@@ -318,15 +436,31 @@ def rollback(batch_id: str, dry_run: bool, skip_confirm: bool, verbose: bool) ->
         operator = FileOperator(app_config, dry_run=dry_run)
 
         def progress_callback(current: int, total: int, message: str) -> None:
-            click.echo(f"  [{current}/{total}] {message}")
+            _safe_echo(f"  [{current}/{total}] {message}")
 
         try:
             rolled_back_ops, failed_ops = operator.rollback(
                 operations, on_progress=progress_callback
             )
+        except FileOwnershipError as e:
+            _safe_echo(f"\n{_ICON_ERR} 回滚安全校验失败：", err=True)
+            _safe_echo(str(e), err=True)
+            state_mgr.add_error(batch_id, f"回滚安全校验失败: {e}")
+            state_mgr.update_status(batch_id, BatchStatus.ROLLBACK_FAILED, "回滚因文件所有权校验失败而中止")
+            final_status = BatchStatus.ROLLBACK_FAILED
+            rolled_back_ops = []
+            failed_ops = [{"error": str(e), "rollback_stopped": True}]
+            reporter = Reporter(app_config)
+            reporter.print_rollback_summary(rolled_back_ops, failed_ops)
+            if not dry_run:
+                reports = reporter.generate_rollback_report(batch_id, rolled_back_ops, failed_ops)
+                _safe_echo(f"\n{_ICON_INFO} 回滚报告已生成：")
+                for name, path in reports.items():
+                    _safe_echo(f"   - {name}: {path}")
+            sys.exit(1)
         except FileOperationError as e:
             if "回滚因文件锁定而中止" in str(e):
-                click.echo(f"\n⚠️  {e}", err=True)
+                _safe_echo(f"\n{_ICON_WARN}  {e}", err=True)
                 rolled_back_ops = []
                 failed_ops = [{"error": str(e), "rollback_stopped": True}]
             else:
@@ -358,23 +492,23 @@ def rollback(batch_id: str, dry_run: bool, skip_confirm: bool, verbose: bool) ->
 
         if not dry_run:
             reports = reporter.generate_rollback_report(batch_id, rolled_back_ops, failed_ops)
-            click.echo("\n📋 回滚报告已生成：")
+            _safe_echo(f"\n{_ICON_OK} 回滚报告已生成：")
             for name, path in reports.items():
-                click.echo(f"   - {name}: {path}")
+                _safe_echo(f"   - {name}: {path}")
 
     except ParseError as e:
-        click.echo(f"\n❌ 解析错误: {e}", err=True)
+        _safe_echo(f"\n{_ICON_ERR} 解析错误: {e}", err=True)
         sys.exit(1)
     except StateError as e:
-        click.echo(f"\n❌ 状态错误: {e}", err=True)
+        _safe_echo(f"\n{_ICON_ERR} 状态错误: {e}", err=True)
         sys.exit(1)
     except FileOperationError as e:
-        click.echo(f"\n❌ 文件操作错误: {e}", err=True)
+        _safe_echo(f"\n{_ICON_ERR} 文件操作错误: {e}", err=True)
         if verbose:
             traceback.print_exc()
         sys.exit(1)
     except Exception as e:
-        click.echo(f"\n❌ 回滚失败: {e}", err=True)
+        _safe_echo(f"\n{_ICON_ERR} 回滚失败: {e}", err=True)
         if verbose:
             traceback.print_exc()
         sys.exit(1)
@@ -406,10 +540,10 @@ def list_batches(status: Optional[str], config: Optional[str]) -> None:
             state_mgr.get_batch(batch.batch_id)
 
     except StateError as e:
-        click.echo(f"\n❌ 状态错误: {e}", err=True)
+        _safe_echo(f"\n{_ICON_ERR} 状态错误: {e}", err=True)
         sys.exit(1)
     except Exception as e:
-        click.echo(f"\n❌ 查询失败: {e}", err=True)
+        _safe_echo(f"\n{_ICON_ERR} 查询失败: {e}", err=True)
         sys.exit(1)
 
 
@@ -428,10 +562,10 @@ def show(batch_id: str, logs: bool, config: Optional[str]) -> None:
         reporter.print_batch_detail(batch, show_logs=logs)
 
     except StateError as e:
-        click.echo(f"\n❌ 状态错误: {e}", err=True)
+        _safe_echo(f"\n{_ICON_ERR} 状态错误: {e}", err=True)
         sys.exit(1)
     except Exception as e:
-        click.echo(f"\n❌ 查询失败: {e}", err=True)
+        _safe_echo(f"\n{_ICON_ERR} 查询失败: {e}", err=True)
         sys.exit(1)
 
 
@@ -447,19 +581,19 @@ def logs(batch_id: str, tail: Optional[int], config: Optional[str]) -> None:
 
         log_lines = state_mgr.get_logs(batch_id, tail=tail)
 
-        click.echo(f"\n批次 {batch_id} 日志：")
-        click.echo("-" * 80)
+        _safe_echo(f"\n批次 {batch_id} 日志：")
+        _safe_echo("-" * 80)
         for line in log_lines:
-            click.echo(line)
+            _safe_echo(line)
         if not log_lines:
-            click.echo("(无日志)")
-        click.echo("-" * 80 + "\n")
+            _safe_echo("(无日志)")
+        _safe_echo("-" * 80 + "\n")
 
     except StateError as e:
-        click.echo(f"\n❌ 状态错误: {e}", err=True)
+        _safe_echo(f"\n{_ICON_ERR} 状态错误: {e}", err=True)
         sys.exit(1)
     except Exception as e:
-        click.echo(f"\n❌ 查询失败: {e}", err=True)
+        _safe_echo(f"\n{_ICON_ERR} 查询失败: {e}", err=True)
         sys.exit(1)
 
 

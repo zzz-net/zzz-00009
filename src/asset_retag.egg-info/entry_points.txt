@@ -1,0 +1,2 @@
+[console_scripts]
+asset-retag = asset_retag.cli:main

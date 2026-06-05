@@ -1,8 +1,0 @@
-# 无效配置 - 用于测试错误处理
-# 缺少必填字段 source_root
-
-target_root: ./examples/target
-operation: invalid_operation  # 无效的操作类型
-photo_extensions:
-  - jpg
-  - jpeg

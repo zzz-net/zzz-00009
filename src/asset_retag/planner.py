@@ -21,6 +21,14 @@ class PlanningError(Exception):
     pass
 
 
+class FatalPlanningError(PlanningError):
+    """致命计划错误 - 必须中止执行"""
+
+    def __init__(self, message: str, conflicts: List[Dict]):
+        super().__init__(message)
+        self.conflicts = conflicts
+
+
 class ExecutionPlanner:
     """执行计划生成器"""
 
@@ -98,6 +106,17 @@ class ExecutionPlanner:
         plan.unregistered.extend(self._find_unregistered_dirs(all_photo_dirs))
 
         self._summarize_plan(plan)
+
+        fatal_conflicts = [
+            c for c in plan.conflicts
+            if c.get("type") in ("duplicate_new_tag", "target_path_conflict")
+        ]
+        if fatal_conflicts:
+            error_msg = (
+                f"检测到 {len(fatal_conflicts)} 个致命冲突，必须修复后才能继续：\n"
+                + "\n".join(f"  - {c.get('message', '')}" for c in fatal_conflicts)
+            )
+            raise FatalPlanningError(error_msg, fatal_conflicts)
 
         return plan
 

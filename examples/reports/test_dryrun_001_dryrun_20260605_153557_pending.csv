@@ -1,9 +1,0 @@
-﻿序号,旧编号,新标签,资产类型,照片目录,目标目录,照片数量,状态
-1,OLD001,AST-2024-001,hardware,D:\workSpace\AI__SPACE\zzz-00009\examples\source\OLD001_laptop,D:\workSpace\AI__SPACE\zzz-00009\examples\target\hardware\AST-2024-001,3,planned
-2,OLD002,AST-2024-002,hardware,D:\workSpace\AI__SPACE\zzz-00009\examples\source\OLD002_monitor,D:\workSpace\AI__SPACE\zzz-00009\examples\target\hardware\AST-2024-002,2,planned
-3,OLD003,AST-2024-003,software,D:\workSpace\AI__SPACE\zzz-00009\examples\source\OLD003_software,D:\workSpace\AI__SPACE\zzz-00009\examples\target\software\AST-2024-003,4,planned
-4,OLD004,AST-2024-004,document,D:\workSpace\AI__SPACE\zzz-00009\examples\source\OLD004_docs,D:\workSpace\AI__SPACE\zzz-00009\examples\target\document\AST-2024-004,5,planned
-5,OLD005,AST-2024-005,other,D:\workSpace\AI__SPACE\zzz-00009\examples\source\OLD005_misc,D:\workSpace\AI__SPACE\zzz-00009\examples\target\other\AST-2024-005,1,planned
-6,OLD006,AST-2024-006,hardware,D:\workSpace\AI__SPACE\zzz-00009\examples\source\OLD006_printer,D:\workSpace\AI__SPACE\zzz-00009\examples\target\hardware\AST-2024-006,2,planned
-7,OLD007,AST-2024-007,hardware,D:\workSpace\AI__SPACE\zzz-00009\examples\source\OLD007_keyboard,D:\workSpace\AI__SPACE\zzz-00009\examples\target\hardware\AST-2024-007,3,planned
-8,OLD008,AST-2024-008,hardware,D:\workSpace\AI__SPACE\zzz-00009\examples\source\OLD008_mouse,D:\workSpace\AI__SPACE\zzz-00009\examples\target\hardware\AST-2024-008,2,planned
