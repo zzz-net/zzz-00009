@@ -346,20 +346,25 @@ class StateManager:
 
         Raises:
             StateError: 批次不存在
-            SnapshotError: 文件已存在且未指定覆盖
+            SnapshotConflictError: 文件已存在且未指定覆盖
+            SnapshotError: 其他导出错误（权限不足、写入失败等）
         """
         state = self.get_batch(batch_id)
 
         try:
             output_dir = Path(output_dir).resolve()
             output_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError as e:
+            raise SnapshotError(
+                f"无权限创建输出目录 {output_dir}: {e}"
+            ) from e
         except Exception as e:
             raise SnapshotError(f"创建输出目录失败: {e}") from e
 
         snapshot_file = output_dir / f"{batch_id}_snapshot.json"
 
         if snapshot_file.exists() and not overwrite:
-            raise SnapshotError(
+            raise SnapshotConflictError(
                 f"快照文件已存在: {snapshot_file}。如需覆盖，请使用 --overwrite 参数。"
             )
 
@@ -394,30 +399,48 @@ class StateManager:
             "recent_logs": recent_logs,
         }
 
+        temp_file = snapshot_file.with_suffix(".tmp_export")
         try:
-            with open(snapshot_file, "w", encoding="utf-8") as f:
+            with open(temp_file, "w", encoding="utf-8") as f:
                 json.dump(snapshot, f, ensure_ascii=False, indent=2)
+            temp_file.replace(snapshot_file)
             logger.info(f"批次 {batch_id} 快照已导出到: {snapshot_file}")
             return snapshot_file
+        except PermissionError as e:
+            if temp_file.exists():
+                try:
+                    temp_file.unlink()
+                except Exception:
+                    pass
+            raise SnapshotError(
+                f"无权限写入快照文件 {snapshot_file}: {e}"
+            ) from e
         except Exception as e:
+            if temp_file.exists():
+                try:
+                    temp_file.unlink()
+                except Exception:
+                    pass
             raise SnapshotError(f"导出快照失败: {e}") from e
 
     def import_snapshot(self, snapshot_file: Path, overwrite: bool = False) -> BatchState:
         """导入批次快照
 
-        写回当前配置指定的 state/log/report 目录
+        写回当前配置指定的 state/log 目录。
+        快照中的 state/log/report 路径仅作为来源说明，
+        实际写入当前配置解析出的目录，不因路径不一致直接失败。
 
         Args:
             snapshot_file: 快照文件路径
-            overwrite: 是否覆盖已存在的同名批次
+            overwrite: 是否覆盖已存在的同名批次（原子替换状态和日志）
 
         Returns:
             导入后的批次状态
 
         Raises:
-            SnapshotFormatError: 快照格式损坏
-            SnapshotConflictError: 同名批次已存在或目标目录不一致
-            SnapshotError: 其他导入错误
+            SnapshotFormatError: 快照格式损坏（无效 JSON、缺字段、非法状态等）
+            SnapshotConflictError: 同名批次已存在且未指定 --overwrite
+            SnapshotError: 其他导入错误（日志写入失败、目标目录权限不足等）
         """
         snapshot_file = Path(snapshot_file).resolve()
 
@@ -428,15 +451,23 @@ class StateManager:
             with open(snapshot_file, "r", encoding="utf-8") as f:
                 snapshot = json.load(f)
         except json.JSONDecodeError as e:
-            raise SnapshotFormatError(f"快照 JSON 解析失败: {e}") from e
+            raise SnapshotFormatError(
+                f"快照 JSON 解析失败，文件可能已损坏: {e}"
+            ) from e
+        except PermissionError as e:
+            raise SnapshotError(
+                f"无权限读取快照文件 {snapshot_file}: {e}"
+            ) from e
         except Exception as e:
-            raise SnapshotFormatError(f"读取快照文件失败: {e}") from e
+            raise SnapshotFormatError(
+                f"读取快照文件失败: {e}"
+            ) from e
 
         self._validate_snapshot_format(snapshot)
 
         batch_id = snapshot["batch_id"]
         state_data = snapshot["state"]
-        config_summary = snapshot["config_summary"]
+        config_summary = snapshot.get("config_summary", {})
 
         current_state_dir = str(self.state_dir)
         current_log_dir = str(self.log_dir)
@@ -447,30 +478,30 @@ class StateManager:
         snapshot_report_dir = config_summary.get("report_dir")
 
         if snapshot_state_dir and snapshot_state_dir != current_state_dir:
-            raise SnapshotConflictError(
-                f"快照 state 目录与当前配置不一致: "
-                f"快照={snapshot_state_dir}, 当前={current_state_dir}。"
-                f"请确保配置匹配或使用 --force 参数（未来版本支持）。"
+            logger.info(
+                f"快照 state 目录与当前配置不同，将使用当前配置目录: "
+                f"快照来源={snapshot_state_dir}, 当前目标={current_state_dir}"
             )
 
         if snapshot_log_dir and snapshot_log_dir != current_log_dir:
-            raise SnapshotConflictError(
-                f"快照 log 目录与当前配置不一致: "
-                f"快照={snapshot_log_dir}, 当前={current_log_dir}。"
-                f"请确保配置匹配或使用 --force 参数（未来版本支持）。"
+            logger.info(
+                f"快照 log 目录与当前配置不同，将使用当前配置目录: "
+                f"快照来源={snapshot_log_dir}, 当前目标={current_log_dir}"
             )
 
         if snapshot_report_dir and snapshot_report_dir != current_report_dir:
-            logger.warning(
-                f"快照 report 目录与当前配置不一致: "
-                f"快照={snapshot_report_dir}, 当前={current_report_dir}。"
-                f"报告路径仅作参考，不会自动复制。"
+            logger.info(
+                f"快照 report 目录与当前配置不同（仅作参考）: "
+                f"快照来源={snapshot_report_dir}, 当前配置={current_report_dir}"
             )
 
         state_file = self._get_state_file(batch_id)
+        log_file = self._get_log_file(batch_id)
+
         if state_file.exists() and not overwrite:
             raise SnapshotConflictError(
-                f"批次 {batch_id} 已存在。如需覆盖，请使用 --overwrite 参数。"
+                f"批次 {batch_id} 已存在（状态文件: {state_file}）。"
+                f"如需覆盖，请使用 --overwrite 参数进行原子替换。"
             )
 
         try:
@@ -484,25 +515,139 @@ class StateManager:
                 operations=state_data.get("operations", []),
                 errors=state_data.get("errors", []),
             )
+        except (KeyError, ValueError) as e:
+            raise SnapshotFormatError(
+                f"快照 state 数据无效: {e}"
+            ) from e
 
-            self._save_state(imported_state)
+        self._atomic_import(batch_id, imported_state, snapshot.get("recent_logs", []))
 
-            log_file = self._get_log_file(batch_id)
-            if snapshot.get("recent_logs"):
+        logger.info(f"批次 {batch_id} 快照已成功导入到 {current_state_dir}")
+        return imported_state
+
+    def _atomic_import(
+        self, batch_id: str, state: BatchState, log_lines: List[str]
+    ) -> None:
+        """原子导入批次状态和日志
+
+        先写入临时文件，成功后再原子替换。失败时清理所有临时文件，
+        不留下半截文件；覆盖模式下也不会破坏原有文件。
+        """
+        state_file = self._get_state_file(batch_id)
+        log_file = self._get_log_file(batch_id)
+
+        temp_state_file = state_file.with_suffix(".tmp_import")
+        temp_log_file = log_file.with_suffix(".tmp_import")
+
+        state_data = {
+            "batch_id": state.batch_id,
+            "status": state.status.value,
+            "created_at": state.created_at.isoformat(),
+            "updated_at": state.updated_at.isoformat(),
+            "config": state.config,
+            "plan": state.plan,
+            "operations": state.operations,
+            "errors": state.errors,
+        }
+
+        def _cleanup_temps() -> None:
+            for f in (temp_state_file, temp_log_file):
                 try:
-                    with open(log_file, "w", encoding="utf-8") as f:
-                        for line in snapshot["recent_logs"]:
-                            f.write(line + "\n")
-                except Exception as e:
-                    logger.warning(f"写入日志文件失败: {e}")
+                    if f.exists():
+                        f.unlink()
+                except Exception:
+                    pass
 
-            logger.info(f"批次 {batch_id} 快照已成功导入")
-            return imported_state
+        def _close_log_handlers() -> None:
+            """关闭可能占用目标日志文件的 handler（Windows 文件锁兼容）"""
+            import logging
+            closed_any = False
+            for handler in list(logging.root.handlers):
+                try:
+                    if isinstance(handler, logging.FileHandler):
+                        hname = getattr(handler, "baseFilename", None) or ""
+                        if batch_id in hname:
+                            handler.close()
+                            logging.root.removeHandler(handler)
+                            closed_any = True
+                except Exception:
+                    pass
+            for logname in ["", "asset_retag"]:
+                lg = logging.getLogger(logname)
+                for handler in list(lg.handlers):
+                    try:
+                        if isinstance(handler, logging.FileHandler):
+                            hname = getattr(handler, "baseFilename", None) or ""
+                            if batch_id in hname:
+                                handler.close()
+                                lg.removeHandler(handler)
+                                closed_any = True
+                    except Exception:
+                        pass
+            if closed_any:
+                logger.debug(f"已关闭批次 {batch_id} 相关的日志 handler")
 
-        except SnapshotConflictError:
-            raise
+        try:
+            self.state_dir.mkdir(parents=True, exist_ok=True)
+            self.log_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError as e:
+            raise SnapshotError(
+                f"目标目录权限不足，无法创建 state/log 目录: {e}"
+            ) from e
         except Exception as e:
-            raise SnapshotError(f"导入快照失败: {e}") from e
+            raise SnapshotError(f"无法准备目标目录: {e}") from e
+
+        try:
+            with open(temp_state_file, "w", encoding="utf-8") as f:
+                json.dump(state_data, f, ensure_ascii=False, indent=2)
+        except PermissionError as e:
+            _cleanup_temps()
+            raise SnapshotError(
+                f"无权限写入状态文件 {state_file}: {e}"
+            ) from e
+        except Exception as e:
+            _cleanup_temps()
+            raise SnapshotError(f"写入状态临时文件失败: {e}") from e
+
+        try:
+            with open(temp_log_file, "w", encoding="utf-8") as f:
+                for line in log_lines:
+                    f.write(line.rstrip("\n") + "\n")
+        except PermissionError as e:
+            _cleanup_temps()
+            raise SnapshotError(
+                f"无权限写入日志文件 {log_file}: {e}"
+            ) from e
+        except Exception as e:
+            _cleanup_temps()
+            raise SnapshotError(f"写入日志临时文件失败: {e}") from e
+
+        _close_log_handlers()
+
+        try:
+            temp_state_file.replace(state_file)
+        except Exception as e:
+            _cleanup_temps()
+            raise SnapshotError(f"原子替换状态文件失败: {e}") from e
+
+        try:
+            try:
+                temp_log_file.replace(log_file)
+            except PermissionError:
+                _close_log_handlers()
+                import time
+                time.sleep(0.05)
+                temp_log_file.replace(log_file)
+        except Exception as e:
+            _cleanup_temps()
+            if state_file.exists():
+                try:
+                    state_file.unlink()
+                except Exception:
+                    pass
+            raise SnapshotError(f"原子替换日志文件失败，已回滚状态文件: {e}") from e
+
+        _cleanup_temps()
 
     def _validate_snapshot_format(self, snapshot: Dict[str, Any]) -> None:
         """验证快照格式是否正确"""

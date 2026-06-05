@@ -110,6 +110,33 @@ def cleanup_test_state() -> None:
         except:
             pass
 
+    # 清理跨配置测试使用的自定义 state/log 目录
+    import logging
+    for handler in list(logging.root.handlers):
+        try:
+            if isinstance(handler, logging.FileHandler):
+                handler.close()
+                logging.root.removeHandler(handler)
+        except Exception:
+            pass
+    for logname in ["", "asset_retag"]:
+        lg = logging.getLogger(logname)
+        for handler in list(lg.handlers):
+            try:
+                if isinstance(handler, logging.FileHandler):
+                    handler.close()
+                    lg.removeHandler(handler)
+            except Exception:
+                pass
+
+    for dir_name in ["state_other", "logs_other", "snapshots"]:
+        dir_path = EXAMPLES_DIR / dir_name
+        if dir_path.exists():
+            try:
+                shutil.rmtree(dir_path, ignore_errors=True)
+            except Exception:
+                pass
+
 
 def setup_test_csv(filename: str, content: str) -> Path:
     """创建测试用 CSV 文件"""
@@ -692,14 +719,25 @@ def test_11_snapshot_overwrite_on_export() -> None:
 
 
 def test_12_snapshot_cross_config_import() -> None:
-    """测试12：跨配置目录导入校验"""
+    """测试12：跨配置目录导入成功（迁移场景）
+
+    快照里的 state/log/report 路径只作为来源说明，
+    真正写入当前配置解析出的目录，不能因为路径不一致直接失败。
+    """
     print("\n" + "=" * 60)
-    print("测试12：跨配置目录导入")
+    print("测试12：跨配置目录导入（迁移场景）")
     print("=" * 60)
 
     cleanup_test_state()
 
-    # 执行一个批次（使用默认配置）
+    # 清理自定义目录（防止之前的残留）
+    other_state_dir = EXAMPLES_DIR / "state_other"
+    other_log_dir = EXAMPLES_DIR / "logs_other"
+    for dir_path in [other_state_dir, other_log_dir]:
+        if dir_path.exists():
+            shutil.rmtree(dir_path)
+
+    # 第一步：使用默认配置执行一个批次
     code, stdout, stderr = run_cli([
         "run",
         "-c", str(EXAMPLES_DIR / "config.yaml"),
@@ -709,7 +747,14 @@ def test_12_snapshot_cross_config_import() -> None:
     ])
     assert_exit_code(code, 0, "执行退出码", stdout, stderr)
 
-    # 导出快照
+    # 记录原始操作数
+    default_state_mgr = _get_state_manager()
+    original_batch = default_state_mgr.get_batch("test_snapshot_004")
+    original_op_count = len(original_batch.operations)
+    assert original_op_count > 0, "原始批次应该有操作记录"
+    print(f"[INFO] 原始批次操作记录数: {original_op_count}")
+
+    # 第二步：导出快照
     snapshots_dir = EXAMPLES_DIR / "snapshots"
     if snapshots_dir.exists():
         shutil.rmtree(snapshots_dir)
@@ -722,45 +767,159 @@ def test_12_snapshot_cross_config_import() -> None:
     assert_exit_code(code, 0, "导出退出码", stdout, stderr)
 
     snapshot_file = snapshots_dir / "test_snapshot_004_snapshot.json"
+    assert snapshot_file.exists(), "快照文件应该存在"
 
-    # 创建一个不同 state/log 目录的配置
+    # 第三步：创建一个不同 state/log 目录的配置
     different_config = EXAMPLES_DIR / "config_diff_dirs.yaml"
-    different_config.write_text("""
+    different_config.write_text(f"""
 source_root: ./examples/source
 target_root: ./examples/target
 operation: copy
 photo_extensions:
   - jpg
   - png
-state_dir: ./examples/state_other
-log_dir: ./examples/logs_other
+state_dir: {other_state_dir}
+log_dir: {other_log_dir}
 report_dir: ./examples/reports
 """, encoding="utf-8")
 
-    # 删除本地批次
-    state_mgr = _get_state_manager()
-    state_mgr.delete_batch("test_snapshot_004")
+    # 第四步：删除默认配置下的本地批次
+    default_state_mgr.delete_batch("test_snapshot_004")
+    try:
+        default_state_mgr.get_batch("test_snapshot_004")
+        raise AssertionError("默认配置下的批次应该已被删除")
+    except Exception:
+        pass
 
-    # 尝试使用不同配置导入，应该失败（state 目录不一致）
+    # 第五步：使用不同配置导入，应该成功（不因为路径不一致而失败）
     code, stdout, stderr = run_cli([
         "batch", "import",
         "--snapshot", str(snapshot_file),
         "--config", str(different_config),
         "--skip-confirm",
     ])
-    assert_exit_code(code, 1, "跨配置导入退出码", stdout, stderr)
-    assert_in_output("快照冲突", stdout + stderr, "冲突提示", "输出")
-    assert_in_output("state 目录与当前配置不一致", stdout + stderr, "state 目录不一致提示", "输出")
-    print("[INFO] 正确拒绝 state 目录不一致的导入")
+    assert_exit_code(code, 0, "跨配置导入退出码", stdout, stderr)
+    assert_in_output("已成功导入", stdout, "导入成功提示", "stdout")
+    print("[INFO] 跨配置目录导入成功（未因路径不一致而失败）")
+
+    # 第六步：验证数据写入了新配置的目录，而不是快照里记录的目录
+    from asset_retag.models import AppConfig, OperationType
+    from asset_retag.state import StateManager
+
+    new_config = AppConfig(
+        source_root=EXAMPLES_DIR / "source",
+        target_root=EXAMPLES_DIR / "target",
+        operation=OperationType.COPY,
+        state_dir=other_state_dir,
+        log_dir=other_log_dir,
+        report_dir=EXAMPLES_DIR / "reports",
+    )
+    new_state_mgr = StateManager(new_config)
+
+    # 新配置目录下应该有状态文件
+    new_state_file = other_state_dir / "test_snapshot_004.json"
+    assert new_state_file.exists(), f"状态文件应该写入新目录: {new_state_file}"
+    print(f"[INFO] 状态文件已写入新目录: {new_state_file}")
+
+    # 新配置目录下应该有日志文件
+    new_log_file = other_log_dir / "test_snapshot_004.log"
+    assert new_log_file.exists(), f"日志文件应该写入新目录: {new_log_file}"
+    print(f"[INFO] 日志文件已写入新目录: {new_log_file}")
+
+    # 默认配置目录下不应该有状态文件
+    old_state_file = Path.home() / ".asset-retag" / "state" / "test_snapshot_004.json"
+    assert not old_state_file.exists(), f"旧目录下不应该有状态文件: {old_state_file}"
+    print("[INFO] 旧目录下没有状态文件（正确）")
+
+    # 第七步：验证导入的批次数据完整
+    imported_batch = new_state_mgr.get_batch("test_snapshot_004")
+    assert imported_batch.batch_id == "test_snapshot_004"
+    assert imported_batch.status.value == "completed"
+    assert len(imported_batch.operations) == original_op_count, (
+        f"操作记录数不匹配: 导入={len(imported_batch.operations)}, 原始={original_op_count}"
+    )
+    print(f"[INFO] 导入的批次数据完整: {len(imported_batch.operations)} 条操作记录")
+
+    # 第八步：验证在新配置下 list/show/logs/rollback 都能识别
+    code, stdout, stderr = run_cli([
+        "list",
+        "--config", str(different_config),
+    ])
+    assert_exit_code(code, 0, "list 退出码", stdout, stderr)
+    assert_in_output("test_snapshot_004", stdout, "list 显示导入批次", "stdout")
+    print("[INFO] list 命令在新配置下能识别导入的批次")
+
+    code, stdout, stderr = run_cli([
+        "show",
+        "--batch-id", "test_snapshot_004",
+        "--config", str(different_config),
+    ])
+    assert_exit_code(code, 0, "show 退出码", stdout, stderr)
+    assert_in_output("test_snapshot_004", stdout, "show 显示批次", "stdout")
+    assert_in_output("completed", stdout.lower(), "show 显示状态", "stdout")
+    print("[INFO] show 命令在新配置下能显示批次详情")
+
+    code, stdout, stderr = run_cli([
+        "logs",
+        "--batch-id", "test_snapshot_004",
+        "--config", str(different_config),
+    ])
+    assert_exit_code(code, 0, "logs 退出码", stdout, stderr)
+    assert_in_output("批次", stdout, "logs 有内容", "stdout")
+    print("[INFO] logs 命令在新配置下能读取日志")
+
+    assert new_state_mgr.can_rollback("test_snapshot_004"), "导入的批次应该可以回滚"
+    print("[INFO] can_rollback 返回 true")
+
+    # 第九步：验证重启进程后依然可用（模拟：重新创建 StateManager）
+    new_state_mgr2 = StateManager(new_config)
+    batch_after_restart = new_state_mgr2.get_batch("test_snapshot_004")
+    assert batch_after_restart.batch_id == "test_snapshot_004"
+    assert new_state_mgr2.can_rollback("test_snapshot_004")
+    print("[INFO] 进程重启后批次依然可用")
+
+    # 第十步：验证 rollback --dry-run 可用（放在最后，会修改批次状态）
+    code, stdout, stderr = run_cli([
+        "rollback",
+        "--batch-id", "test_snapshot_004",
+        "--config", str(different_config),
+        "--dry-run",
+        "--skip-confirm",
+    ])
+    assert_exit_code(code, 0, "rollback dry-run 退出码", stdout, stderr)
+    assert_in_output("回滚结果摘要", stdout, "rollback dry-run 执行", "stdout")
+    print("[INFO] rollback --dry-run 可以正常执行")
 
     # 清理
-    different_config.unlink()
-    for dir_name in ["state_other", "logs_other"]:
-        dir_path = EXAMPLES_DIR / dir_name
+    import logging
+    for handler in list(logging.root.handlers):
+        try:
+            if isinstance(handler, logging.FileHandler):
+                handler.close()
+                logging.root.removeHandler(handler)
+        except Exception:
+            pass
+    for logname in ["", "asset_retag"]:
+        lg = logging.getLogger(logname)
+        for handler in list(lg.handlers):
+            try:
+                if isinstance(handler, logging.FileHandler):
+                    handler.close()
+                    lg.removeHandler(handler)
+            except Exception:
+                pass
+    try:
+        different_config.unlink()
+    except Exception:
+        pass
+    for dir_path in [other_state_dir, other_log_dir]:
         if dir_path.exists():
-            shutil.rmtree(dir_path)
+            try:
+                shutil.rmtree(dir_path, ignore_errors=True)
+            except Exception:
+                pass
 
-    print("[PASS] 测试12完成 - 跨配置目录校验正确")
+    print("[PASS] 测试12完成 - 跨配置目录导入迁移成功")
 
 
 def test_13_snapshot_format_error() -> None:
@@ -930,6 +1089,244 @@ def test_14_snapshot_imported_batch_usability() -> None:
     print("[PASS] 测试14完成 - 导入后批次可用性验证通过")
 
 
+def test_15_snapshot_atomic_overwrite_integrity() -> None:
+    """测试15：原子覆盖完整性
+
+    - 覆盖导入时不留下半截文件
+    - 失败时不破坏原有批次
+    - 导入后无 .tmp_import 残留文件
+    """
+    print("\n" + "=" * 60)
+    print("测试15：原子覆盖完整性")
+    print("=" * 60)
+
+    cleanup_test_state()
+
+    # 第一步：执行第一个批次
+    code, stdout, stderr = run_cli([
+        "run",
+        "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "-m", str(EXAMPLES_DIR / "mapping.csv"),
+        "--batch-id", "test_atomic_001",
+        "--skip-confirm",
+    ])
+    assert_exit_code(code, 0, "执行批次1退出码", stdout, stderr)
+
+    # 记录原始数据
+    state_mgr = _get_state_manager()
+    batch_v1 = state_mgr.get_batch("test_atomic_001")
+    original_state_path = state_mgr._get_state_file("test_atomic_001")
+    original_log_path = state_mgr._get_log_file("test_atomic_001")
+    original_state_content = original_state_path.read_text(encoding="utf-8")
+    original_log_content = original_log_path.read_text(encoding="utf-8")
+    original_op_count = len(batch_v1.operations)
+    print(f"[INFO] 原始批次操作记录数: {original_op_count}")
+
+    # 第二步：修改批次操作记录，然后导出一个新的、有更多操作的快照
+    batch_v1.operations.append({
+        "operation": "dummy",
+        "timestamp": "2099-01-01T00:00:00",
+        "note": "This is v2 for overwrite test",
+    })
+    # 将修改后的批次状态保存（模拟有更多操作）
+    batch_v1.status = __import__("asset_retag.models", fromlist=["BatchStatus"]).BatchStatus.PARTIAL
+    state_mgr._save_state(batch_v1)
+
+    # 导出修改后的快照
+    snapshots_dir = EXAMPLES_DIR / "snapshots"
+    if snapshots_dir.exists():
+        shutil.rmtree(snapshots_dir)
+
+    code, stdout, stderr = run_cli([
+        "batch", "export",
+        "--batch-id", "test_atomic_001",
+        "--output-dir", str(snapshots_dir),
+    ])
+    assert_exit_code(code, 0, "导出退出码", stdout, stderr)
+    snapshot_file = snapshots_dir / "test_atomic_001_snapshot.json"
+
+    # 现在把原始文件内容恢复回去（模拟 v1 状态）
+    original_state_path.write_text(original_state_content, encoding="utf-8")
+    original_log_path.write_text(original_log_content, encoding="utf-8")
+
+    # 第三步：使用 --overwrite 覆盖导入
+    code, stdout, stderr = run_cli([
+        "batch", "import",
+        "--snapshot", str(snapshot_file),
+        "--overwrite",
+        "--skip-confirm",
+    ])
+    assert_exit_code(code, 0, "覆盖导入退出码", stdout, stderr)
+    assert_in_output("已成功导入", stdout, "覆盖导入成功", "stdout")
+
+    # 第四步：验证没有临时文件残留
+    state_dir = Path.home() / ".asset-retag" / "state"
+    log_dir = Path.home() / ".asset-retag" / "logs"
+    temp_files = list(state_dir.glob("*.tmp_import")) + list(log_dir.glob("*.tmp_import"))
+    if temp_files:
+        raise AssertionError(f"发现残留临时文件: {temp_files}")
+    print("[INFO] 没有 .tmp_import 临时文件残留（正确）")
+
+    # 第五步：验证覆盖后的状态内容正确（v2）
+    state_mgr_after = _get_state_manager()
+    batch_after = state_mgr_after.get_batch("test_atomic_001")
+    assert batch_after.status.value == "partial", (
+        f"覆盖后状态不正确: {batch_after.status.value}, 期望 partial"
+    )
+    assert len(batch_after.operations) == original_op_count + 1, (
+        f"操作记录数不正确: {len(batch_after.operations)}, 期望 {original_op_count + 1}"
+    )
+    print("[INFO] 覆盖后的批次状态和操作记录正确")
+
+    # 第六步：验证日志文件存在且可读
+    log_file_after = state_mgr_after._get_log_file("test_atomic_001")
+    assert log_file_after.exists(), "日志文件应该存在"
+    log_content = log_file_after.read_text(encoding="utf-8")
+    assert len(log_content) > 0, "日志文件不应该为空"
+    print("[INFO] 覆盖后的日志文件存在且可读")
+
+    # 第七步：验证损坏快照不会留下临时文件
+    snapshots_dir2 = EXAMPLES_DIR / "snapshots"
+    bad_snapshot = snapshots_dir2 / "bad_atomic_snapshot.json"
+    bad_snapshot.write_text("{broken json!!", encoding="utf-8")
+
+    # 先清理状态目录下的临时文件
+    for f in list(state_dir.glob("*.tmp_import")) + list(log_dir.glob("*.tmp_import")):
+        try:
+            f.unlink()
+        except Exception:
+            pass
+
+    code, stdout, stderr = run_cli([
+        "batch", "import",
+        "--snapshot", str(bad_snapshot),
+        "--skip-confirm",
+    ])
+    assert_exit_code(code, 1, "损坏快照导入退出码", stdout, stderr)
+
+    temp_files_after = list(state_dir.glob("*.tmp_import")) + list(log_dir.glob("*.tmp_import"))
+    if temp_files_after:
+        raise AssertionError(f"损坏快照导入后仍有临时文件: {temp_files_after}")
+    print("[INFO] 损坏快照导入后没有临时文件残留（正确）")
+
+    # 第八步：验证原有批次在导入损坏快照后未受影响
+    batch_untouched = state_mgr_after.get_batch("test_atomic_001")
+    assert batch_untouched.status.value == "partial"
+    assert len(batch_untouched.operations) == original_op_count + 1
+    print("[INFO] 原有批次在失败导入后未受影响（正确）")
+
+    print("[PASS] 测试15完成 - 原子覆盖完整性验证通过")
+
+
+def test_16_snapshot_import_log_readability_and_rollback_dryrun() -> None:
+    """测试16：导入后日志可读性和 rollback dry-run 可用性
+
+    专门验证导入快照后：
+    - 日志文件完整可读（包含操作记录相关内容）
+    - rollback --dry-run 可以正常执行并输出预期内容
+    - 进程重启后状态依然完整
+    """
+    print("\n" + "=" * 60)
+    print("测试16：导入后日志可读性和 rollback dry-run")
+    print("=" * 60)
+
+    cleanup_test_state()
+
+    # 第一步：执行一个批次
+    code, stdout, stderr = run_cli([
+        "run",
+        "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "-m", str(EXAMPLES_DIR / "mapping.csv"),
+        "--batch-id", "test_log_rb_001",
+        "--skip-confirm",
+    ])
+    assert_exit_code(code, 0, "执行退出码", stdout, stderr)
+
+    state_mgr_orig = _get_state_manager()
+    original_batch = state_mgr_orig.get_batch("test_log_rb_001")
+    original_log_lines = state_mgr_orig.get_logs("test_log_rb_001")
+    assert len(original_log_lines) > 0, "原始日志应有内容"
+    print(f"[INFO] 原始日志行数: {len(original_log_lines)}")
+
+    # 第二步：导出快照
+    snapshots_dir = EXAMPLES_DIR / "snapshots"
+    if snapshots_dir.exists():
+        shutil.rmtree(snapshots_dir)
+
+    code, stdout, stderr = run_cli([
+        "batch", "export",
+        "--batch-id", "test_log_rb_001",
+        "--output-dir", str(snapshots_dir),
+    ])
+    assert_exit_code(code, 0, "导出退出码", stdout, stderr)
+    snapshot_file = snapshots_dir / "test_log_rb_001_snapshot.json"
+
+    # 第三步：删除本地批次后导入
+    state_mgr_orig.delete_batch("test_log_rb_001")
+
+    code, stdout, stderr = run_cli([
+        "batch", "import",
+        "--snapshot", str(snapshot_file),
+        "--skip-confirm",
+    ])
+    assert_exit_code(code, 0, "导入退出码", stdout, stderr)
+
+    # 第四步：验证日志文件存在且内容可读
+    state_mgr = _get_state_manager()
+    log_lines = state_mgr.get_logs("test_log_rb_001")
+    assert len(log_lines) > 0, "导入后的日志不应为空"
+    print(f"[INFO] 导入后日志行数: {len(log_lines)}")
+
+    # 验证日志包含关键词
+    log_content = "\n".join(log_lines)
+    assert "批次已创建" in log_content or "开始执行" in log_content or "completed" in log_content.lower(), (
+        "日志应包含批次执行相关信息"
+    )
+    print("[INFO] 导入后日志包含有效内容（正确）")
+
+    # 第五步：验证 logs 命令能正确显示
+    code, stdout, stderr = run_cli([
+        "logs",
+        "--batch-id", "test_log_rb_001",
+        "--tail", "10",
+    ])
+    assert_exit_code(code, 0, "logs 命令退出码", stdout, stderr)
+    assert_in_output("test_log_rb_001", stdout, "logs 命令显示批次号", "stdout")
+    print("[INFO] logs 命令可以正常读取导入的批次日志")
+
+    # 第六步：验证 can_rollback 为 true
+    assert state_mgr.can_rollback("test_log_rb_001"), "导入的批次应该可以回滚"
+    batch_for_rollback = state_mgr.get_batch("test_log_rb_001")
+    assert len(batch_for_rollback.operations) > 0, "批次应有操作记录用于回滚"
+    print(f"[INFO] 可回滚操作数: {len(batch_for_rollback.operations)}")
+
+    # 第七步：模拟进程重启后状态和日志依然可用
+    state_mgr_restart = _get_state_manager()
+    batch_restarted = state_mgr_restart.get_batch("test_log_rb_001")
+    assert batch_restarted.batch_id == "test_log_rb_001"
+    assert batch_restarted.status.value == "completed"
+    assert len(batch_restarted.operations) == len(original_batch.operations)
+    log_lines_restart = state_mgr_restart.get_logs("test_log_rb_001")
+    assert len(log_lines_restart) > 0
+    print("[INFO] 进程重启后批次状态和日志依然可用（正确）")
+
+    # 第八步：验证 rollback --dry-run 可以执行（放在最后，会修改批次状态）
+    code, stdout, stderr = run_cli([
+        "rollback",
+        "--batch-id", "test_log_rb_001",
+        "--dry-run",
+        "--skip-confirm",
+    ])
+    assert_exit_code(code, 0, "rollback dry-run 退出码", stdout, stderr)
+    # 输出应包含回滚摘要
+    assert "回滚结果摘要" in stdout or "回滚" in stdout, (
+        f"rollback dry-run 输出应包含回滚相关内容，实际: {stdout[:300]}"
+    )
+    print("[INFO] rollback --dry-run 可以正常执行并输出结果")
+
+    print("[PASS] 测试16完成 - 日志可读性和 rollback dry-run 验证通过")
+
+
 def _get_state_manager():
     """获取 StateManager 实例（用于测试内部方法）"""
     from asset_retag.models import AppConfig, OperationType
@@ -965,6 +1362,8 @@ def main() -> int:
         test_12_snapshot_cross_config_import,
         test_13_snapshot_format_error,
         test_14_snapshot_imported_batch_usability,
+        test_15_snapshot_atomic_overwrite_integrity,
+        test_16_snapshot_import_log_readability_and_rollback_dryrun,
     ]
 
     passed = 0
@@ -985,8 +1384,30 @@ def main() -> int:
     print(f"测试结果: 通过 {passed} / {len(tests)}, 失败 {failed}")
     print("=" * 70)
 
-    # 最终清理
-    cleanup_test_state()
+    # 最终清理（关闭所有日志句柄，避免 Windows 文件锁）
+    import logging
+    for handler in list(logging.root.handlers):
+        try:
+            if isinstance(handler, logging.FileHandler):
+                handler.close()
+                logging.root.removeHandler(handler)
+        except Exception:
+            pass
+    for logname in ["", "asset_retag"]:
+        lg = logging.getLogger(logname)
+        for handler in list(lg.handlers):
+            try:
+                if isinstance(handler, logging.FileHandler):
+                    handler.close()
+                    lg.removeHandler(handler)
+            except Exception:
+                pass
+    import time
+    time.sleep(0.1)
+    try:
+        cleanup_test_state()
+    except Exception:
+        pass
 
     return 0 if failed == 0 else 1
 

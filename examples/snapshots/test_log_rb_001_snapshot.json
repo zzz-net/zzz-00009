@@ -1,12 +1,12 @@
 {
   "snapshot_version": "1.0",
-  "snapshot_created_at": "2026-06-05T19:36:13.821118",
-  "batch_id": "test_snapshot_005",
+  "snapshot_created_at": "2026-06-05T21:51:34.835529",
+  "batch_id": "test_log_rb_001",
   "state": {
-    "batch_id": "test_snapshot_005",
+    "batch_id": "test_log_rb_001",
     "status": "completed",
-    "created_at": "2026-06-05T19:36:13.754923",
-    "updated_at": "2026-06-05T19:36:13.811122",
+    "created_at": "2026-06-05T21:51:34.790621",
+    "updated_at": "2026-06-05T21:51:34.821348",
     "config": {
       "source_root": "D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\source",
       "target_root": "D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\target",
@@ -26,8 +26,8 @@
       "csv_hash": ""
     },
     "plan": {
-      "batch_id": "test_snapshot_005",
-      "created_at": "2026-06-05T19:36:13.756492",
+      "batch_id": "test_log_rb_001",
+      "created_at": "2026-06-05T21:51:34.793993",
       "items": [
         {
           "old_id": "OLD001",
@@ -97,7 +97,7 @@
       {
         "operation": "copy",
         "archived_path": "D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\archive\\hardware\\OLD001\\OLD001_0001.jpg",
-        "timestamp": "2026-06-05T19:36:13.798443",
+        "timestamp": "2026-06-05T21:51:34.810121",
         "target_fingerprint": {
           "st_size": 15,
           "st_mtime": 1780647498.815457
@@ -113,7 +113,7 @@
       {
         "operation": "copy",
         "archived_path": "D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\archive\\hardware\\OLD001\\OLD001_0002.jpg",
-        "timestamp": "2026-06-05T19:36:13.801406",
+        "timestamp": "2026-06-05T21:51:34.812029",
         "target_fingerprint": {
           "st_size": 15,
           "st_mtime": 1780647497.9399781
@@ -129,7 +129,7 @@
       {
         "operation": "copy",
         "archived_path": "D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\archive\\hardware\\OLD002\\OLD002_0001.jpg",
-        "timestamp": "2026-06-05T19:36:13.803332",
+        "timestamp": "2026-06-05T21:51:34.815019",
         "target_fingerprint": {
           "st_size": 4,
           "st_mtime": 1780647559.6560006
@@ -145,7 +145,7 @@
       {
         "operation": "copy",
         "archived_path": "D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\archive\\hardware\\OLD002\\OLD002_0002.jpg",
-        "timestamp": "2026-06-05T19:36:13.805976",
+        "timestamp": "2026-06-05T21:51:34.817092",
         "target_fingerprint": {
           "st_size": 15,
           "st_mtime": 1780647500.9698067
@@ -161,7 +161,7 @@
       {
         "operation": "copy",
         "archived_path": "D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\archive\\software\\OLD003\\OLD003_0001.png",
-        "timestamp": "2026-06-05T19:36:13.808241",
+        "timestamp": "2026-06-05T21:51:34.819042",
         "target_fingerprint": {
           "st_size": 15,
           "st_mtime": 1780647561.792585
@@ -188,40 +188,40 @@
     "csv_path": "D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\mapping.csv"
   },
   "report_paths": [
-    "D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\reports\\test_snapshot_005_result_20260605_193613_operations.json",
-    "D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\reports\\test_snapshot_005_result_20260605_193613_result.csv",
-    "D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\reports\\test_snapshot_005_result_20260605_193613_result.json"
+    "D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\reports\\test_log_rb_001_result_20260605_215134_operations.json",
+    "D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\reports\\test_log_rb_001_result_20260605_215134_result.csv",
+    "D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\reports\\test_log_rb_001_result_20260605_215134_result.json"
   ],
   "recent_logs": [
-    "2026-06-05 19:36:13,754 - asset_retag.cli - INFO - 开始执行批次，ID: test_snapshot_005",
-    "[2026-06-05T19:36:13] 批次已创建，状态: BatchStatus.PENDING",
-    "[2026-06-05T19:36:13] 状态变更为 planning: 开始执行计划",
-    "2026-06-05 19:36:13,756 - asset_retag.planner - INFO - 开始生成执行计划，批次 ID: test_snapshot_005",
-    "2026-06-05 19:36:13,785 - asset_retag.planner - INFO - 计划生成完成:",
-    "2026-06-05 19:36:13,785 - asset_retag.planner - INFO -   - 总映射数: 3",
-    "2026-06-05 19:36:13,785 - asset_retag.planner - INFO -   - 有照片的映射: 3",
-    "2026-06-05 19:36:13,785 - asset_retag.planner - INFO -   - 无照片的映射: 0",
-    "2026-06-05 19:36:13,785 - asset_retag.planner - INFO -   - 总照片数: 5",
-    "2026-06-05 19:36:13,785 - asset_retag.planner - INFO -   - 冲突数: 0",
-    "2026-06-05 19:36:13,785 - asset_retag.planner - INFO -   - 缺证据数: 0",
-    "2026-06-05 19:36:13,786 - asset_retag.planner - INFO -   - 未登记目录数: 0",
-    "2026-06-05 19:36:13,786 - asset_retag.planner - INFO -   - 错误数: 0",
-    "[2026-06-05T19:36:13] 执行计划已保存，共 3 个项目",
-    "[2026-06-05T19:36:13] 状态变更为 executing: 开始执行文件操作",
-    "2026-06-05 19:36:13,792 - asset_retag.file_ops - INFO - 开始执行计划，共 3 个项目需要处理",
-    "2026-06-05 19:36:13,793 - asset_retag.file_ops - INFO - [1/3] 处理 OLD001 -> AST-001",
-    "2026-06-05 19:36:13,798 - asset_retag.file_ops - INFO - 已归档源文件到: D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\archive\\hardware\\OLD001\\OLD001_0001.jpg",
-    "2026-06-05 19:36:13,800 - asset_retag.file_ops - INFO - 已归档源文件到: D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\archive\\hardware\\OLD001\\OLD001_0002.jpg",
-    "2026-06-05 19:36:13,801 - asset_retag.file_ops - INFO - [2/3] 处理 OLD002 -> AST-002",
-    "2026-06-05 19:36:13,803 - asset_retag.file_ops - INFO - 已归档源文件到: D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\archive\\hardware\\OLD002\\OLD002_0001.jpg",
-    "2026-06-05 19:36:13,805 - asset_retag.file_ops - INFO - 已归档源文件到: D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\archive\\hardware\\OLD002\\OLD002_0002.jpg",
-    "2026-06-05 19:36:13,805 - asset_retag.file_ops - INFO - [3/3] 处理 OLD003 -> AST-003",
-    "2026-06-05 19:36:13,807 - asset_retag.file_ops - INFO - 已归档源文件到: D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\archive\\software\\OLD003\\OLD003_0001.png",
-    "[2026-06-05T19:36:13] 已记录 5 个操作",
-    "[2026-06-05T19:36:13] 状态变更为 completed: 成功完成 5 个操作",
-    "2026-06-05 19:36:13,814 - asset_retag.reporter - INFO - 执行结果报告已生成到: D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\reports",
-    "2026-06-05 19:36:13,814 - asset_retag.reporter - INFO -   - result_json: test_snapshot_005_result_20260605_193613_result.json",
-    "2026-06-05 19:36:13,814 - asset_retag.reporter - INFO -   - result_csv: test_snapshot_005_result_20260605_193613_result.csv",
-    "2026-06-05 19:36:13,814 - asset_retag.reporter - INFO -   - operations_json: test_snapshot_005_result_20260605_193613_operations.json"
+    "2026-06-05 21:51:34,790 - asset_retag.cli - INFO - 开始执行批次，ID: test_log_rb_001",
+    "[2026-06-05T21:51:34] 批次已创建，状态: BatchStatus.PENDING",
+    "[2026-06-05T21:51:34] 状态变更为 planning: 开始执行计划",
+    "2026-06-05 21:51:34,793 - asset_retag.planner - INFO - 开始生成执行计划，批次 ID: test_log_rb_001",
+    "2026-06-05 21:51:34,802 - asset_retag.planner - INFO - 计划生成完成:",
+    "2026-06-05 21:51:34,802 - asset_retag.planner - INFO -   - 总映射数: 3",
+    "2026-06-05 21:51:34,802 - asset_retag.planner - INFO -   - 有照片的映射: 3",
+    "2026-06-05 21:51:34,802 - asset_retag.planner - INFO -   - 无照片的映射: 0",
+    "2026-06-05 21:51:34,803 - asset_retag.planner - INFO -   - 总照片数: 5",
+    "2026-06-05 21:51:34,803 - asset_retag.planner - INFO -   - 冲突数: 0",
+    "2026-06-05 21:51:34,803 - asset_retag.planner - INFO -   - 缺证据数: 0",
+    "2026-06-05 21:51:34,803 - asset_retag.planner - INFO -   - 未登记目录数: 0",
+    "2026-06-05 21:51:34,803 - asset_retag.planner - INFO -   - 错误数: 0",
+    "[2026-06-05T21:51:34] 执行计划已保存，共 3 个项目",
+    "[2026-06-05T21:51:34] 状态变更为 executing: 开始执行文件操作",
+    "2026-06-05 21:51:34,807 - asset_retag.file_ops - INFO - 开始执行计划，共 3 个项目需要处理",
+    "2026-06-05 21:51:34,807 - asset_retag.file_ops - INFO - [1/3] 处理 OLD001 -> AST-001",
+    "2026-06-05 21:51:34,810 - asset_retag.file_ops - INFO - 已归档源文件到: D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\archive\\hardware\\OLD001\\OLD001_0001.jpg",
+    "2026-06-05 21:51:34,812 - asset_retag.file_ops - INFO - 已归档源文件到: D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\archive\\hardware\\OLD001\\OLD001_0002.jpg",
+    "2026-06-05 21:51:34,812 - asset_retag.file_ops - INFO - [2/3] 处理 OLD002 -> AST-002",
+    "2026-06-05 21:51:34,814 - asset_retag.file_ops - INFO - 已归档源文件到: D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\archive\\hardware\\OLD002\\OLD002_0001.jpg",
+    "2026-06-05 21:51:34,816 - asset_retag.file_ops - INFO - 已归档源文件到: D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\archive\\hardware\\OLD002\\OLD002_0002.jpg",
+    "2026-06-05 21:51:34,817 - asset_retag.file_ops - INFO - [3/3] 处理 OLD003 -> AST-003",
+    "2026-06-05 21:51:34,817 - asset_retag.file_ops - INFO - 已归档源文件到: D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\archive\\software\\OLD003\\OLD003_0001.png",
+    "[2026-06-05T21:51:34] 已记录 5 个操作",
+    "[2026-06-05T21:51:34] 状态变更为 completed: 成功完成 5 个操作",
+    "2026-06-05 21:51:34,826 - asset_retag.reporter - INFO - 执行结果报告已生成到: D:\\workSpace\\AI__SPACE\\zzz-00009\\examples\\reports",
+    "2026-06-05 21:51:34,826 - asset_retag.reporter - INFO -   - result_json: test_log_rb_001_result_20260605_215134_result.json",
+    "2026-06-05 21:51:34,826 - asset_retag.reporter - INFO -   - result_csv: test_log_rb_001_result_20260605_215134_result.csv",
+    "2026-06-05 21:51:34,826 - asset_retag.reporter - INFO -   - operations_json: test_log_rb_001_result_20260605_215134_operations.json"
   ]
 }

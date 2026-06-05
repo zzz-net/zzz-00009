@@ -131,11 +131,11 @@ asset-retag batch import --snapshot ./snapshots/<BATCH_ID>_snapshot.json --confi
 
 > **快照内容**：每个快照 JSON 包含批次状态、完整操作记录、配置摘要、相关报告路径和最近 100 行日志。
 >
-> **导入校验**：
-> - 快照 state/log 目录必须与当前配置一致（防止跨环境错配）
-> - report 目录不一致时仅警告，不阻止导入
-> - 同名批次默认拒绝导入，需显式 `--overwrite`
-> - 格式损坏的快照会给出明确错误提示
+> **导入规则（跨配置迁移友好）**：
+> - 快照中的 `state_dir`/`log_dir`/`report_dir` 路径**仅作为来源说明**，不会强制校验与当前配置一致
+> - 导入时数据会**真正写入当前配置解析出的 state/log/report 目录**，可以从另一套配置目录无缝迁移回来
+> - 同名批次默认拒绝导入，需显式 `--overwrite` 进行**原子替换**（状态+日志同时替换，失败不留下半截文件）
+> - 格式损坏的快照会给出明确错误提示（JSON 损坏、缺字段、非法状态等）
 >
 > **导入后可用性**：导入的批次可正常使用 `list`/`show`/`logs`/`rollback` 命令，进程重启后依然可用。
 
@@ -280,6 +280,32 @@ asset-retag rollback --batch-id <BATCH_ID>
 # 执行中途模拟进程退出后，仍可查看历史
 asset-retag list
 asset-retag logs --batch-id <BATCH_ID>
+
+# ========== 批次快照导出/导入 ==========
+
+# 导出批次快照
+asset-retag batch export --batch-id test_normal_run_001 --output-dir ./snapshots
+
+# 查看导出的快照文件
+ls ./snapshots/test_normal_run_001_snapshot.json
+
+# 清理本地批次后导入
+asset-retag batch import --snapshot ./snapshots/test_normal_run_001_snapshot.json --skip-confirm
+
+# 导入后验证可用性
+asset-retag list
+asset-retag show --batch-id test_normal_run_001
+asset-retag logs --batch-id test_normal_run_001
+asset-retag rollback --batch-id test_normal_run_001 --dry-run
+
+# 同名批次冲突测试（默认拒绝）
+asset-retag batch import --snapshot ./snapshots/test_normal_run_001_snapshot.json --skip-confirm
+
+# 强制覆盖导入
+asset-retag batch import --snapshot ./snapshots/test_normal_run_001_snapshot.json --overwrite --skip-confirm
+
+# 跨配置目录导入测试（state/log 目录不一致时报错）
+asset-retag batch import --snapshot ./snapshots/test_normal_run_001_snapshot.json --config other_config.yaml
 ```
 
 ## ⚠️ 注意事项
