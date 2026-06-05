@@ -107,6 +107,38 @@ asset-retag rollback --batch-id <BATCH_ID>
 
 > **重要**：回滚时如果检测到目标文件被其他进程占用，会立即停止回滚并报告，**不会强制覆盖**。
 
+### 6. 批次快照导出/导入
+
+```bash
+# 导出批次快照到指定目录（目录不存在会自动创建）
+asset-retag batch export --batch-id <BATCH_ID> --output-dir ./snapshots
+
+# 导出时覆盖已存在的快照文件
+asset-retag batch export --batch-id <BATCH_ID> --output-dir ./snapshots --overwrite
+
+# 导入批次快照（默认不覆盖同名批次）
+asset-retag batch import --snapshot ./snapshots/<BATCH_ID>_snapshot.json
+
+# 导入时覆盖已存在的同名批次
+asset-retag batch import --snapshot ./snapshots/<BATCH_ID>_snapshot.json --overwrite
+
+# 跳过确认提示（适合脚本调用）
+asset-retag batch import --snapshot ./snapshots/<BATCH_ID>_snapshot.json --skip-confirm
+
+# 指定配置文件导入
+asset-retag batch import --snapshot ./snapshots/<BATCH_ID>_snapshot.json --config examples/config.yaml
+```
+
+> **快照内容**：每个快照 JSON 包含批次状态、完整操作记录、配置摘要、相关报告路径和最近 100 行日志。
+>
+> **导入校验**：
+> - 快照 state/log 目录必须与当前配置一致（防止跨环境错配）
+> - report 目录不一致时仅警告，不阻止导入
+> - 同名批次默认拒绝导入，需显式 `--overwrite`
+> - 格式损坏的快照会给出明确错误提示
+>
+> **导入后可用性**：导入的批次可正常使用 `list`/`show`/`logs`/`rollback` 命令，进程重启后依然可用。
+
 ## 📋 配置说明 (`config.yaml`)
 
 ```yaml

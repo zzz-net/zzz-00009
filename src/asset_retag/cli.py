@@ -26,7 +26,13 @@ from .models import BatchStatus
 from .parser import ConfigParser, CSVMappingParser, ParseError
 from .planner import ExecutionPlanner, FatalPlanningError
 from .reporter import Reporter
-from .state import StateError, StateManager
+from .state import (
+    StateError,
+    StateManager,
+    SnapshotError,
+    SnapshotFormatError,
+    SnapshotConflictError,
+)
 
 
 # 安全输出（替代 emoji，避免 Windows 编码问题）
@@ -602,6 +608,95 @@ def logs(batch_id: str, tail: Optional[int], config: Optional[str]) -> None:
         sys.exit(1)
     except Exception as e:
         _safe_echo(f"\n{_ICON_ERR} 查询失败: {e}", err=True)
+        sys.exit(1)
+
+
+@main.group()
+def batch() -> None:
+    """批次管理（快照导出/导入）"""
+    pass
+
+
+@batch.command("export")
+@click.option("--batch-id", "-b", required=True, help="要导出的批次 ID")
+@click.option("--output-dir", "-o", required=True, type=click.Path(file_okay=False), help="快照输出目录")
+@click.option("--config", "-c", type=click.Path(exists=True, dir_okay=False), help="配置文件路径（可选）")
+@click.option("--overwrite", is_flag=True, help="覆盖已存在的快照文件")
+def batch_export(batch_id: str, output_dir: str, config: Optional[str], overwrite: bool) -> None:
+    """导出批次快照"""
+    try:
+        app_config = _load_config_or_default(config)
+        state_mgr = StateManager(app_config)
+
+        output_path = Path(output_dir).resolve()
+
+        _safe_echo(f"{_ICON_INFO} 正在导出批次 {batch_id} 快照...")
+
+        snapshot_file = state_mgr.export_snapshot(batch_id, output_path, overwrite=overwrite)
+
+        _safe_echo(f"\n{_ICON_OK} 快照已导出: {snapshot_file}")
+        _safe_echo(f"   包含: 状态、操作记录({state_mgr.get_batch(batch_id).operations.__len__()}条)、配置摘要、报告路径、最近日志")
+
+    except StateError as e:
+        _safe_echo(f"\n{_ICON_ERR} 状态错误: {e}", err=True)
+        sys.exit(1)
+    except SnapshotConflictError as e:
+        _safe_echo(f"\n{_ICON_ERR} 快照冲突: {e}", err=True)
+        sys.exit(1)
+    except SnapshotError as e:
+        _safe_echo(f"\n{_ICON_ERR} 快照错误: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        _safe_echo(f"\n{_ICON_ERR} 导出失败: {e}", err=True)
+        sys.exit(1)
+
+
+@batch.command("import")
+@click.option("--snapshot", "-s", required=True, type=click.Path(exists=True, dir_okay=False), help="快照文件路径")
+@click.option("--config", "-c", type=click.Path(exists=True, dir_okay=False), help="配置文件路径（可选）")
+@click.option("--overwrite", is_flag=True, help="覆盖已存在的同名批次")
+@click.option("--skip-confirm", is_flag=True, help="跳过确认提示")
+def batch_import(snapshot: str, config: Optional[str], overwrite: bool, skip_confirm: bool) -> None:
+    """导入批次快照"""
+    try:
+        app_config = _load_config_or_default(config)
+        state_mgr = StateManager(app_config)
+
+        snapshot_file = Path(snapshot).resolve()
+
+        _safe_echo(f"{_ICON_INFO} 正在导入快照: {snapshot_file}")
+
+        if not skip_confirm:
+            _safe_echo(f"\n将导入到当前配置目录:")
+            _safe_echo(f"  状态目录: {app_config.state_dir}")
+            _safe_echo(f"  日志目录: {app_config.log_dir}")
+            _safe_echo(f"  报告目录: {app_config.report_dir}")
+            if not click.confirm("\n确认导入？", default=False):
+                _safe_echo("已取消。")
+                return
+
+        imported_state = state_mgr.import_snapshot(snapshot_file, overwrite=overwrite)
+
+        _safe_echo(f"\n{_ICON_OK} 批次 {imported_state.batch_id} 已成功导入")
+        _safe_echo(f"   状态: {imported_state.status.value}")
+        _safe_echo(f"   操作记录: {len(imported_state.operations)} 条")
+        _safe_echo(f"\n可用命令验证:")
+        _safe_echo(f"   asset-retag show --batch-id {imported_state.batch_id}")
+        _safe_echo(f"   asset-retag logs --batch-id {imported_state.batch_id}")
+        if state_mgr.can_rollback(imported_state.batch_id):
+            _safe_echo(f"   asset-retag rollback --batch-id {imported_state.batch_id}")
+
+    except SnapshotFormatError as e:
+        _safe_echo(f"\n{_ICON_ERR} 快照格式错误: {e}", err=True)
+        sys.exit(1)
+    except SnapshotConflictError as e:
+        _safe_echo(f"\n{_ICON_ERR} 快照冲突: {e}", err=True)
+        sys.exit(1)
+    except SnapshotError as e:
+        _safe_echo(f"\n{_ICON_ERR} 快照错误: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        _safe_echo(f"\n{_ICON_ERR} 导入失败: {e}", err=True)
         sys.exit(1)
 
 

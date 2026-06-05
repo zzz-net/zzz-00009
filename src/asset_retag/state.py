@@ -21,6 +21,21 @@ class StateError(Exception):
     pass
 
 
+class SnapshotError(Exception):
+    """快照操作错误"""
+    pass
+
+
+class SnapshotFormatError(SnapshotError):
+    """快照格式错误"""
+    pass
+
+
+class SnapshotConflictError(SnapshotError):
+    """快照冲突错误"""
+    pass
+
+
 class StateManager:
     """状态管理器"""
 
@@ -315,6 +330,228 @@ class StateManager:
             logger.info(f"已清理批次 {batch_id} 的文件: {', '.join(deleted)}")
         if failed:
             logger.warning(f"未能清理以下文件（可能被占用）: {', '.join(failed)}")
+
+    def export_snapshot(self, batch_id: str, output_dir: Path, overwrite: bool = False) -> Path:
+        """导出批次快照
+
+        按 batch-id 把状态、操作记录、配置摘要、报告路径和最近日志打成 JSON
+
+        Args:
+            batch_id: 批次 ID
+            output_dir: 输出目录，不存在则创建
+            overwrite: 是否覆盖已存在的快照文件
+
+        Returns:
+            快照文件路径
+
+        Raises:
+            StateError: 批次不存在
+            SnapshotError: 文件已存在且未指定覆盖
+        """
+        state = self.get_batch(batch_id)
+
+        try:
+            output_dir = Path(output_dir).resolve()
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            raise SnapshotError(f"创建输出目录失败: {e}") from e
+
+        snapshot_file = output_dir / f"{batch_id}_snapshot.json"
+
+        if snapshot_file.exists() and not overwrite:
+            raise SnapshotError(
+                f"快照文件已存在: {snapshot_file}。如需覆盖，请使用 --overwrite 参数。"
+            )
+
+        report_paths = self._find_report_paths(batch_id)
+        recent_logs = self._get_recent_logs(batch_id, tail=100)
+
+        snapshot = {
+            "snapshot_version": "1.0",
+            "snapshot_created_at": datetime.now().isoformat(),
+            "batch_id": batch_id,
+            "state": {
+                "batch_id": state.batch_id,
+                "status": state.status.value,
+                "created_at": state.created_at.isoformat(),
+                "updated_at": state.updated_at.isoformat(),
+                "config": state.config,
+                "plan": state.plan,
+                "operations": state.operations,
+                "errors": state.errors,
+            },
+            "config_summary": {
+                "source_root": state.config.get("source_root"),
+                "target_root": state.config.get("target_root"),
+                "archive_root": state.config.get("archive_root"),
+                "operation": state.config.get("operation"),
+                "state_dir": state.config.get("state_dir"),
+                "log_dir": state.config.get("log_dir"),
+                "report_dir": state.config.get("report_dir"),
+                "csv_path": state.config.get("csv_path"),
+            },
+            "report_paths": [str(p) for p in report_paths],
+            "recent_logs": recent_logs,
+        }
+
+        try:
+            with open(snapshot_file, "w", encoding="utf-8") as f:
+                json.dump(snapshot, f, ensure_ascii=False, indent=2)
+            logger.info(f"批次 {batch_id} 快照已导出到: {snapshot_file}")
+            return snapshot_file
+        except Exception as e:
+            raise SnapshotError(f"导出快照失败: {e}") from e
+
+    def import_snapshot(self, snapshot_file: Path, overwrite: bool = False) -> BatchState:
+        """导入批次快照
+
+        写回当前配置指定的 state/log/report 目录
+
+        Args:
+            snapshot_file: 快照文件路径
+            overwrite: 是否覆盖已存在的同名批次
+
+        Returns:
+            导入后的批次状态
+
+        Raises:
+            SnapshotFormatError: 快照格式损坏
+            SnapshotConflictError: 同名批次已存在或目标目录不一致
+            SnapshotError: 其他导入错误
+        """
+        snapshot_file = Path(snapshot_file).resolve()
+
+        if not snapshot_file.exists():
+            raise SnapshotError(f"快照文件不存在: {snapshot_file}")
+
+        try:
+            with open(snapshot_file, "r", encoding="utf-8") as f:
+                snapshot = json.load(f)
+        except json.JSONDecodeError as e:
+            raise SnapshotFormatError(f"快照 JSON 解析失败: {e}") from e
+        except Exception as e:
+            raise SnapshotFormatError(f"读取快照文件失败: {e}") from e
+
+        self._validate_snapshot_format(snapshot)
+
+        batch_id = snapshot["batch_id"]
+        state_data = snapshot["state"]
+        config_summary = snapshot["config_summary"]
+
+        current_state_dir = str(self.state_dir)
+        current_log_dir = str(self.log_dir)
+        current_report_dir = str(self.config.report_dir)
+
+        snapshot_state_dir = config_summary.get("state_dir")
+        snapshot_log_dir = config_summary.get("log_dir")
+        snapshot_report_dir = config_summary.get("report_dir")
+
+        if snapshot_state_dir and snapshot_state_dir != current_state_dir:
+            raise SnapshotConflictError(
+                f"快照 state 目录与当前配置不一致: "
+                f"快照={snapshot_state_dir}, 当前={current_state_dir}。"
+                f"请确保配置匹配或使用 --force 参数（未来版本支持）。"
+            )
+
+        if snapshot_log_dir and snapshot_log_dir != current_log_dir:
+            raise SnapshotConflictError(
+                f"快照 log 目录与当前配置不一致: "
+                f"快照={snapshot_log_dir}, 当前={current_log_dir}。"
+                f"请确保配置匹配或使用 --force 参数（未来版本支持）。"
+            )
+
+        if snapshot_report_dir and snapshot_report_dir != current_report_dir:
+            logger.warning(
+                f"快照 report 目录与当前配置不一致: "
+                f"快照={snapshot_report_dir}, 当前={current_report_dir}。"
+                f"报告路径仅作参考，不会自动复制。"
+            )
+
+        state_file = self._get_state_file(batch_id)
+        if state_file.exists() and not overwrite:
+            raise SnapshotConflictError(
+                f"批次 {batch_id} 已存在。如需覆盖，请使用 --overwrite 参数。"
+            )
+
+        try:
+            imported_state = BatchState(
+                batch_id=state_data["batch_id"],
+                status=BatchStatus(state_data["status"]),
+                created_at=datetime.fromisoformat(state_data["created_at"]),
+                updated_at=datetime.fromisoformat(state_data["updated_at"]),
+                config=state_data.get("config", {}),
+                plan=state_data.get("plan"),
+                operations=state_data.get("operations", []),
+                errors=state_data.get("errors", []),
+            )
+
+            self._save_state(imported_state)
+
+            log_file = self._get_log_file(batch_id)
+            if snapshot.get("recent_logs"):
+                try:
+                    with open(log_file, "w", encoding="utf-8") as f:
+                        for line in snapshot["recent_logs"]:
+                            f.write(line + "\n")
+                except Exception as e:
+                    logger.warning(f"写入日志文件失败: {e}")
+
+            logger.info(f"批次 {batch_id} 快照已成功导入")
+            return imported_state
+
+        except SnapshotConflictError:
+            raise
+        except Exception as e:
+            raise SnapshotError(f"导入快照失败: {e}") from e
+
+    def _validate_snapshot_format(self, snapshot: Dict[str, Any]) -> None:
+        """验证快照格式是否正确"""
+        required_fields = ["snapshot_version", "batch_id", "state", "config_summary"]
+        for field in required_fields:
+            if field not in snapshot:
+                raise SnapshotFormatError(f"快照缺少必填字段: {field}")
+
+        if snapshot["snapshot_version"] != "1.0":
+            raise SnapshotFormatError(
+                f"不支持的快照版本: {snapshot['snapshot_version']}。当前支持版本: 1.0"
+            )
+
+        required_state_fields = ["batch_id", "status", "created_at", "updated_at"]
+        for field in required_state_fields:
+            if field not in snapshot["state"]:
+                raise SnapshotFormatError(f"快照 state 缺少必填字段: {field}")
+
+        try:
+            BatchStatus(snapshot["state"]["status"])
+        except ValueError:
+            raise SnapshotFormatError(
+                f"无效的批次状态: {snapshot['state']['status']}"
+            )
+
+        try:
+            datetime.fromisoformat(snapshot["state"]["created_at"])
+            datetime.fromisoformat(snapshot["state"]["updated_at"])
+        except ValueError:
+            raise SnapshotFormatError("快照中的日期时间格式无效")
+
+    def _find_report_paths(self, batch_id: str) -> List[Path]:
+        """查找与批次相关的报告文件路径"""
+        report_dir = self.config.report_dir
+        if not report_dir.exists():
+            return []
+
+        reports = []
+        for pattern in [f"{batch_id}_*", f"*{batch_id}*"]:
+            reports.extend(report_dir.glob(pattern))
+
+        return sorted(set(reports))
+
+    def _get_recent_logs(self, batch_id: str, tail: int = 100) -> List[str]:
+        """获取最近的日志行（用于导出快照）"""
+        try:
+            return self.get_logs(batch_id, tail=tail)
+        except StateError:
+            return []
 
     def _log(self, batch_id: str, message: str) -> None:
         """写入日志"""
