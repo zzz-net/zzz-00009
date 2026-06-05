@@ -96,9 +96,12 @@ asset-retag logs --batch-id <BATCH_ID> --tail 20
 
 ```bash
 # 预演回滚（不实际修改文件）
-asset-retag rollback --batch-id <BATCH_ID> --dry-run
+asset-retag rollback --batch-id <BATCH_ID> --config examples/config.yaml --dry-run
 
-# 实际回滚
+# 实际回滚（推荐显式指定配置）
+asset-retag rollback --batch-id <BATCH_ID> --config examples/config.yaml
+
+# 也可以自动发现配置（如果在项目目录下）
 asset-retag rollback --batch-id <BATCH_ID>
 ```
 

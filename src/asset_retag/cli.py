@@ -81,13 +81,18 @@ def main() -> None:
 def _classify_parse_errors(errors: List[str]) -> Tuple[List[str], List[str]]:
     """分类解析错误：(致命错误, 非致命错误)
 
-    致命错误：照片目录不存在 - 必须中止
-    非致命错误：重复标签（已在 planner 中处理）、空字段、无效类型等 - 可询问用户
+    致命错误：照片目录不存在、重复新标签、重复旧编号 - 必须立即中止，不创建任何状态
+    非致命错误：空字段、无效类型等 - 可询问用户是否继续
     """
     fatal = []
     non_fatal = []
     for err in errors:
-        if "照片目录不存在" in err or "photo_dir" in err.lower() and "not exist" in err.lower():
+        if ("照片目录不存在" in err
+            or ("photo_dir" in err.lower() and "not exist" in err.lower())
+            or "重复的新标签" in err
+            or "重复的旧编号" in err
+            or "duplicate new_tag" in err.lower()
+            or "duplicate old_id" in err.lower()):
             fatal.append(err)
         else:
             non_fatal.append(err)
@@ -117,7 +122,7 @@ def dry_run(config: str, mapping: str, batch_id: Optional[str], skip_confirm: bo
         _safe_echo(f"{_ICON_INFO} 正在解析 CSV 映射文件...")
         mappings, parse_errors = CSVMappingParser.parse(mapping_path, app_config.source_root)
 
-        # 检查致命解析错误（照片目录不存在）
+        # 检查致命解析错误（照片目录不存在、重复新标签、重复旧编号）
         fatal_parse_errors, non_fatal_parse_errors = _classify_parse_errors(parse_errors)
         if fatal_parse_errors:
             _safe_echo(f"\n{_ICON_ERR} CSV 解析发现 {len(fatal_parse_errors)} 个致命错误：", err=True)
@@ -228,7 +233,7 @@ def run(config: str, mapping: str, batch_id: Optional[str], skip_confirm: bool, 
         _safe_echo(f"{_ICON_INFO} 正在解析 CSV 映射文件...")
         mappings, parse_errors = CSVMappingParser.parse(mapping_path, app_config.source_root)
 
-        # 检查致命解析错误（照片目录不存在）
+        # 检查致命解析错误（照片目录不存在、重复新标签、重复旧编号）
         fatal_parse_errors, non_fatal_parse_errors = _classify_parse_errors(parse_errors)
         if fatal_parse_errors:
             _safe_echo(f"\n{_ICON_ERR} CSV 解析发现 {len(fatal_parse_errors)} 个致命错误：", err=True)
@@ -297,14 +302,22 @@ def run(config: str, mapping: str, batch_id: Optional[str], skip_confirm: bool, 
         executable_items = [item for item in plan.items if item.status == "planned" and item.photos]
         if not executable_items:
             _safe_echo(f"\n{_ICON_WARN} 没有可执行的项目（所有映射都没有照片或有冲突）")
-            state_mgr.update_status(batch_id, BatchStatus.FAILED, "无可执行项目")
+            # 彻底清理批次，不留下 FAILED 状态
+            if state_mgr and batch_created and batch_id:
+                state_mgr.delete_batch(batch_id)
+                _safe_echo(f"{_ICON_INFO} 已清理批次状态和日志")
             sys.exit(2)
 
         if not skip_confirm:
             _safe_echo(f"\n将处理 {len(executable_items)} 个映射，共 {sum(len(i.photos) for i in executable_items)} 个文件")
             if not click.confirm("确认执行？此操作将修改文件系统", default=False):
-                state_mgr.update_status(batch_id, BatchStatus.FAILED, "用户取消")
-                _safe_echo("已取消。")
+                # 用户取消，彻底清理批次，不留下 FAILED 状态（无论批次是否是本次创建的）
+                if state_mgr and batch_id:
+                    try:
+                        state_mgr.delete_batch(batch_id)
+                    except StateError:
+                        pass
+                _safe_echo("已取消，未留下任何批次状态。")
                 sys.exit(0)
 
         state_mgr.update_status(batch_id, BatchStatus.EXECUTING, "开始执行文件操作")
@@ -388,19 +401,14 @@ def run(config: str, mapping: str, batch_id: Optional[str], skip_confirm: bool, 
 
 @main.command()
 @click.option("--batch-id", "-b", required=True, help="要回滚的批次 ID")
+@click.option("--config", "-c", type=click.Path(exists=True, dir_okay=False), help="配置文件路径（可选）")
 @click.option("--dry-run", is_flag=True, help="预演回滚，不实际修改文件")
 @click.option("--skip-confirm", is_flag=True, help="跳过确认提示")
 @click.option("--verbose", "-v", is_flag=True, help="显示详细日志")
-def rollback(batch_id: str, dry_run: bool, skip_confirm: bool, verbose: bool) -> None:
+def rollback(batch_id: str, config: Optional[str], dry_run: bool, skip_confirm: bool, verbose: bool) -> None:
     """回滚指定批次的操作"""
     try:
-        temp_config_path = _discover_config_path()
-        if not temp_config_path or not temp_config_path.exists():
-            raise click.ClickException(
-                "无法自动发现配置文件。请在项目目录下运行，或确保 config.yaml 存在。"
-            )
-
-        app_config = ConfigParser.parse(temp_config_path)
+        app_config = _load_config_or_default(config)
         setup_logging(app_config.log_dir, batch_id, verbose)
         logger = logging.getLogger(__name__)
 
