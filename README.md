@@ -253,6 +253,79 @@ asset-retag inventory -c ./config.yaml import --file ./snapshots/baseline_2024_i
 - **删除 [-]**：清单中有但当前目录没有的文件
 - **变更 [~]**：两边都存在但文件大小或修改时间不同的文件
 
+### 9. 交接包 (Handoff) 管理
+
+```bash
+# 从批次创建交接包（打包配置摘要、批次状态、报告索引、最近日志）
+asset-retag handoff -c ./config.yaml create --batch-id <BATCH_ID>
+
+# 指定交接包 ID 和备注
+asset-retag handoff -c ./config.yaml create --batch-id <BATCH_ID> \
+  --handoff-id handoff_2024_shift_01 --note "日班交接，完成3个批次"
+
+# 列出所有交接包（跨进程重启可见）
+asset-retag handoff -c ./config.yaml list
+asset-retag handoff --profile production list
+
+# 查看交接包详情
+asset-retag handoff -c ./config.yaml show --handoff-id <HANDOFF_ID>
+
+# 查看详情并附带最近日志
+asset-retag handoff -c ./config.yaml show --handoff-id <HANDOFF_ID> --logs
+
+# 导出交接包到 JSON
+asset-retag handoff -c ./config.yaml export --handoff-id <HANDOFF_ID> --output ./handoffs/
+asset-retag handoff -c ./config.yaml export --handoff-id <HANDOFF_ID> --output ./handoffs/my_handoff.json
+
+# 强制覆盖导出
+asset-retag handoff -c ./config.yaml export --handoff-id <HANDOFF_ID> \
+  --output ./handoffs/my_handoff.json --overwrite
+
+# 从 JSON 导入交接包（同名默认拒绝）
+asset-retag handoff -c ./config.yaml import --file ./handoffs/<HANDOFF_ID>_handoff.json
+
+# 强制覆盖同名交接包（原子替换）
+asset-retag handoff -c ./config.yaml import --file ./handoffs/<HANDOFF_ID>_handoff.json --overwrite
+
+# 删除交接包（需要确认）
+asset-retag handoff -c ./config.yaml remove --handoff-id <HANDOFF_ID>
+
+# 跳过确认直接删除
+asset-retag handoff -c ./config.yaml remove --handoff-id <HANDOFF_ID> --skip-confirm
+```
+
+> **交接包特性**：
+> - 存储在 `state_dir/handoffs/`，**跨进程重启保持**
+> - 每个交接包包含：配置摘要、批次状态、操作记录数、错误数、报告索引（文件名/路径/大小）、最近 100 行日志、自定义备注
+> - 创建、导入导出、删除操作均写入 `handoff_operations.log` 操作日志
+> - 导入导出使用 JSON 格式，支持版本校验（`handoff_version: 1.0`）和必填字段检查
+> - 同名导入/导出默认拒绝，`--overwrite` 时原子替换（先写临时文件再 replace，不留半成品）
+> - 所有错误场景清晰报错，**不输出 traceback**：批次不存在、交接包不存在、损坏 JSON、缺字段、同名冲突、无写权限
+
+#### Handoff 错误提示示例
+
+```bash
+# 批次不存在
+asset-retag handoff -c ./config.yaml create --batch-id nonexistent_batch
+# 输出：[ERR] 批次错误: 批次不存在: nonexistent_batch
+
+# 交接包不存在
+asset-retag handoff -c ./config.yaml show --handoff-id nonexistent_handoff
+# 输出：[ERR] 交接包不存在: 交接包不存在: nonexistent_handoff
+
+# 同名交接包冲突（默认拒绝）
+asset-retag handoff -c ./config.yaml import --file ./handoffs/existing_handoff.json
+# 输出：[ERR] 交接包冲突: 交接包 'xxx' 已存在。如需覆盖，请使用 --overwrite 参数进行原子替换。
+
+# 导入损坏 JSON
+asset-retag handoff -c ./config.yaml import --file ./handoffs/broken.json
+# 输出：[ERR] 交接包格式错误: 交接包 JSON 解析失败，文件可能已损坏: ...
+
+# 导入缺少必填字段
+asset-retag handoff -c ./config.yaml import --file ./handoffs/incomplete.json
+# 输出：[ERR] 交接包格式错误: 交接包缺少必填字段: handoff_id
+```
+
 ## 📋 配置说明 (`config.yaml`)
 
 ```yaml
@@ -353,6 +426,8 @@ src/asset_retag/
 ├── file_ops.py        # 文件操作模块（复制、归档、回滚）
 ├── state.py           # 状态记录模块（批次、日志、幂等）
 ├── reporter.py        # 报告模块（JSON/CSV 导出）
+├── profiles.py        # 配置档案管理模块
+├── inventory.py       # 资产清单管理模块
 └── cli.py             # CLI 主入口
 ```
 

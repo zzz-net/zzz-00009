@@ -47,6 +47,13 @@ from .inventory import (
     InventoryNotFoundError,
     InventoryManager,
 )
+from .handoff import (
+    HandoffError,
+    HandoffFormatError,
+    HandoffConflictError,
+    HandoffNotFoundError,
+    HandoffManager,
+)
 
 
 # 安全输出（替代 emoji，避免 Windows 编码问题）
@@ -1248,6 +1255,258 @@ def inventory_diff(ctx: click.Context, name: str) -> None:
         sys.exit(1)
     except Exception as e:
         _safe_echo(f"\n{_ICON_ERR} 比对失败: {e}", err=True)
+        sys.exit(1)
+
+
+@main.group()
+@click.option("--config", "-c", type=click.Path(exists=True, dir_okay=False), help="配置文件路径")
+@click.option("--profile", "-p", help="配置档案名称")
+@click.pass_context
+def handoff(ctx: click.Context, config: Optional[str], profile: Optional[str]) -> None:
+    """交接包管理（创建/查看/导入导出）"""
+    try:
+        app_config, _ = _resolve_config(config, profile)
+        ctx.ensure_object(dict)
+        ctx.obj["app_config"] = app_config
+    except click.ClickException:
+        raise
+    except Exception as e:
+        _safe_echo(f"\n{_ICON_ERR} 解析配置失败: {e}", err=True)
+        sys.exit(1)
+
+
+@handoff.command("create")
+@click.option("--batch-id", "-b", required=True, help="要打包的批次 ID")
+@click.option("--note", "-n", default="", help="交接备注")
+@click.option("--handoff-id", help="指定交接包 ID（默认自动生成）")
+@click.pass_context
+def handoff_create(ctx: click.Context, batch_id: str, note: str, handoff_id: Optional[str]) -> None:
+    """从批次创建交接包"""
+    try:
+        app_config = ctx.obj["app_config"]
+        state_mgr = StateManager(app_config)
+        handoff_mgr = HandoffManager(app_config)
+
+        _safe_echo(f"{_ICON_INFO} 正在从批次 {batch_id} 创建交接包...")
+        handoff_obj = handoff_mgr.create_from_batch(
+            batch_id, state_mgr, note=note, handoff_id=handoff_id
+        )
+
+        _safe_echo(f"\n{_ICON_OK} 交接包已创建: {handoff_obj.handoff_id}")
+        _safe_echo(f"   批次 ID: {handoff_obj.batch_id}")
+        _safe_echo(f"   批次状态: {handoff_obj.batch_status}")
+        _safe_echo(f"   操作记录: {handoff_obj.operations_count} 条")
+        _safe_echo(f"   错误数: {handoff_obj.errors_count}")
+        _safe_echo(f"   报告索引: {len(handoff_obj.report_index)} 个")
+        _safe_echo(f"   最近日志: {len(handoff_obj.recent_logs)} 行")
+        if handoff_obj.note:
+            _safe_echo(f"   备注: {handoff_obj.note}")
+        _safe_echo(f"\n可用命令:")
+        _safe_echo(f"   asset-retag handoff list")
+        _safe_echo(f"   asset-retag handoff show --handoff-id {handoff_obj.handoff_id}")
+
+    except StateError as e:
+        _safe_echo(f"\n{_ICON_ERR} 批次错误: {e}", err=True)
+        sys.exit(1)
+    except HandoffConflictError as e:
+        _safe_echo(f"\n{_ICON_ERR} 交接包冲突: {e}", err=True)
+        sys.exit(1)
+    except HandoffError as e:
+        _safe_echo(f"\n{_ICON_ERR} 交接包错误: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        _safe_echo(f"\n{_ICON_ERR} 创建交接包失败: {e}", err=True)
+        sys.exit(1)
+
+
+@handoff.command("list")
+@click.pass_context
+def handoff_list(ctx: click.Context) -> None:
+    """列出所有交接包"""
+    try:
+        app_config = ctx.obj["app_config"]
+        handoff_mgr = HandoffManager(app_config)
+
+        handoffs = handoff_mgr.list_handoffs()
+
+        if not handoffs:
+            _safe_echo(f"{_ICON_INFO} 暂无交接包，使用 handoff create 创建")
+            return
+
+        _safe_echo(f"\n共有 {len(handoffs)} 个交接包：")
+        _safe_echo("-" * 100)
+        for h in handoffs:
+            _safe_echo(f"  {h.handoff_id}")
+            _safe_echo(f"    批次: {h.batch_id}  状态: {h.batch_status}")
+            _safe_echo(f"    创建: {h.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
+            if h.note:
+                _safe_echo(f"    备注: {h.note}")
+        _safe_echo("-" * 100)
+
+    except HandoffError as e:
+        _safe_echo(f"\n{_ICON_ERR} 交接包错误: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        _safe_echo(f"\n{_ICON_ERR} 列出交接包失败: {e}", err=True)
+        sys.exit(1)
+
+
+@handoff.command("show")
+@click.option("--handoff-id", "-i", required=True, help="交接包 ID")
+@click.option("--logs", "-l", is_flag=True, help="显示最近日志")
+@click.pass_context
+def handoff_show(ctx: click.Context, handoff_id: str, logs: bool) -> None:
+    """显示交接包详情"""
+    try:
+        app_config = ctx.obj["app_config"]
+        handoff_mgr = HandoffManager(app_config)
+        h = handoff_mgr.get_handoff(handoff_id)
+
+        _safe_echo(f"\n交接包 ID: {h.handoff_id}")
+        _safe_echo(f"批次 ID: {h.batch_id}")
+        _safe_echo(f"批次状态: {h.batch_status}")
+        _safe_echo(f"创建时间: {h.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
+        _safe_echo(f"更新时间: {h.updated_at.strftime('%Y-%m-%d %H:%M:%S')}")
+        if h.note:
+            _safe_echo(f"备注: {h.note}")
+
+        _safe_echo(f"\n--- 操作统计 ---")
+        _safe_echo(f"  操作记录数: {h.operations_count}")
+        _safe_echo(f"  错误数: {h.errors_count}")
+
+        _safe_echo(f"\n--- 配置摘要 ---")
+        for key, val in h.config_summary.items():
+            if val:
+                _safe_echo(f"  {key}: {val}")
+
+        _safe_echo(f"\n--- 报告索引 ({len(h.report_index)} 个) ---")
+        for r in h.report_index:
+            _safe_echo(f"  {r['name']}  ({r.get('size', 0)} 字节)")
+            _safe_echo(f"    路径: {r['path']}")
+        if not h.report_index:
+            _safe_echo(f"  (无报告)")
+
+        if logs:
+            _safe_echo(f"\n--- 最近日志 ({len(h.recent_logs)} 行) ---")
+            for line in h.recent_logs:
+                _safe_echo(f"  {line}")
+            if not h.recent_logs:
+                _safe_echo(f"  (无日志)")
+
+    except HandoffNotFoundError as e:
+        _safe_echo(f"\n{_ICON_ERR} 交接包不存在: {e}", err=True)
+        sys.exit(1)
+    except HandoffFormatError as e:
+        _safe_echo(f"\n{_ICON_ERR} 交接包格式错误: {e}", err=True)
+        sys.exit(1)
+    except HandoffError as e:
+        _safe_echo(f"\n{_ICON_ERR} 交接包错误: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        _safe_echo(f"\n{_ICON_ERR} 显示交接包失败: {e}", err=True)
+        sys.exit(1)
+
+
+@handoff.command("export")
+@click.option("--handoff-id", "-i", required=True, help="交接包 ID")
+@click.option("--output", "-o", "output_path", required=True, type=click.Path(), help="输出文件或目录路径")
+@click.option("--overwrite", is_flag=True, help="覆盖已存在的文件（原子替换）")
+@click.pass_context
+def handoff_export(ctx: click.Context, handoff_id: str, output_path: str, overwrite: bool) -> None:
+    """导出交接包到 JSON"""
+    try:
+        app_config = ctx.obj["app_config"]
+        handoff_mgr = HandoffManager(app_config)
+
+        exported = handoff_mgr.export_handoff(handoff_id, output_path, overwrite=overwrite)
+
+        _safe_echo(f"{_ICON_OK} 交接包已导出: {handoff_id}")
+        _safe_echo(f"   输出文件: {exported}")
+        if overwrite:
+            _safe_echo(f"   (已覆盖同名文件)")
+
+    except HandoffNotFoundError as e:
+        _safe_echo(f"\n{_ICON_ERR} 交接包不存在: {e}", err=True)
+        sys.exit(1)
+    except HandoffConflictError as e:
+        _safe_echo(f"\n{_ICON_ERR} 交接包冲突: {e}", err=True)
+        sys.exit(1)
+    except HandoffError as e:
+        _safe_echo(f"\n{_ICON_ERR} 交接包错误: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        _safe_echo(f"\n{_ICON_ERR} 导出交接包失败: {e}", err=True)
+        sys.exit(1)
+
+
+@handoff.command("import")
+@click.option("--file", "-f", "import_file", required=True, type=click.Path(exists=True, dir_okay=False), help="导入的 JSON 文件路径")
+@click.option("--overwrite", is_flag=True, help="覆盖已存在的同名交接包（原子替换）")
+@click.pass_context
+def handoff_import_cmd(ctx: click.Context, import_file: str, overwrite: bool) -> None:
+    """从 JSON 导入交接包"""
+    try:
+        app_config = ctx.obj["app_config"]
+        handoff_mgr = HandoffManager(app_config)
+
+        imported = handoff_mgr.import_handoff(import_file, overwrite=overwrite)
+
+        _safe_echo(f"{_ICON_OK} 已导入交接包: {imported.handoff_id}")
+        _safe_echo(f"   批次 ID: {imported.batch_id}")
+        _safe_echo(f"   批次状态: {imported.batch_status}")
+        if overwrite:
+            _safe_echo(f"   (已覆盖同名交接包)")
+        _safe_echo(f"\n可用命令验证:")
+        _safe_echo(f"   asset-retag handoff list")
+        _safe_echo(f"   asset-retag handoff show --handoff-id {imported.handoff_id}")
+
+    except HandoffFormatError as e:
+        _safe_echo(f"\n{_ICON_ERR} 交接包格式错误: {e}", err=True)
+        sys.exit(1)
+    except HandoffConflictError as e:
+        _safe_echo(f"\n{_ICON_ERR} 交接包冲突: {e}", err=True)
+        sys.exit(1)
+    except HandoffError as e:
+        _safe_echo(f"\n{_ICON_ERR} 交接包错误: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        _safe_echo(f"\n{_ICON_ERR} 导入交接包失败: {e}", err=True)
+        sys.exit(1)
+
+
+@handoff.command("remove")
+@click.option("--handoff-id", "-i", required=True, help="交接包 ID")
+@click.option("--skip-confirm", is_flag=True, help="跳过确认提示")
+@click.pass_context
+def handoff_remove(ctx: click.Context, handoff_id: str, skip_confirm: bool) -> None:
+    """删除交接包"""
+    try:
+        app_config = ctx.obj["app_config"]
+        handoff_mgr = HandoffManager(app_config)
+
+        h = handoff_mgr.get_handoff(handoff_id)
+
+        _safe_echo(f"交接包 ID: {h.handoff_id}")
+        _safe_echo(f"批次 ID: {h.batch_id}")
+        _safe_echo(f"批次状态: {h.batch_status}")
+        _safe_echo(f"创建时间: {h.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
+
+        if not skip_confirm:
+            if not click.confirm("\n确认删除此交接包？此操作不可撤销。", default=False):
+                _safe_echo("已取消。")
+                return
+
+        handoff_mgr.remove_handoff(handoff_id)
+        _safe_echo(f"{_ICON_OK} 已删除交接包: {handoff_id}")
+
+    except HandoffNotFoundError as e:
+        _safe_echo(f"\n{_ICON_ERR} 交接包不存在: {e}", err=True)
+        sys.exit(1)
+    except HandoffError as e:
+        _safe_echo(f"\n{_ICON_ERR} 交接包错误: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        _safe_echo(f"\n{_ICON_ERR} 删除交接包失败: {e}", err=True)
         sys.exit(1)
 
 

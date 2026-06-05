@@ -1367,6 +1367,29 @@ def _cleanup_inventories() -> None:
             pass
 
 
+def _cleanup_handoffs() -> None:
+    """清理测试交接包数据"""
+    handoffs_dir = Path.home() / ".asset-retag" / "state" / "handoffs"
+    if handoffs_dir.exists():
+        try:
+            shutil.rmtree(handoffs_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
+def _get_handoff_manager():
+    """获取 HandoffManager 实例（用于测试内部方法）"""
+    from asset_retag.handoff import HandoffManager
+    from asset_retag.models import AppConfig, OperationType
+    config = AppConfig(
+        source_root=EXAMPLES_DIR / "source",
+        target_root=EXAMPLES_DIR / "target",
+        operation=OperationType.COPY,
+        report_dir=EXAMPLES_DIR / "reports",
+    )
+    return HandoffManager(config)
+
+
 def _get_inventory_manager():
     """获取 InventoryManager 实例（用于测试内部方法）"""
     from asset_retag.inventory import InventoryManager
@@ -2258,6 +2281,448 @@ def test_26_inventory_remove_and_scan_overwrite() -> None:
     print("[PASS] 测试26完成 - Inventory remove/overwrite/日志正确")
 
 
+def _create_test_batch(batch_id: str) -> None:
+    """辅助函数：创建一个测试批次用于 handoff 测试"""
+    from asset_retag.state import StateManager
+    from asset_retag.models import AppConfig, OperationType, BatchStatus
+    from pathlib import Path
+
+    config = AppConfig(
+        source_root=EXAMPLES_DIR / "source",
+        target_root=EXAMPLES_DIR / "target",
+        operation=OperationType.COPY,
+        report_dir=EXAMPLES_DIR / "reports",
+    )
+    state_mgr = StateManager(config)
+    config_dict = {
+        "source_root": str(EXAMPLES_DIR / "source"),
+        "target_root": str(EXAMPLES_DIR / "target"),
+        "archive_root": None,
+        "operation": "copy",
+        "state_dir": str(config.state_dir),
+        "log_dir": str(config.log_dir),
+        "report_dir": str(config.report_dir),
+        "csv_path": str(EXAMPLES_DIR / "mapping.csv"),
+    }
+    state_mgr.create_batch(batch_id, config_dict)
+    state_mgr.update_status(batch_id, BatchStatus.COMPLETED, "测试完成")
+    state_mgr.add_operations(batch_id, [
+        {"old_id": "OLD001", "new_tag": "TAG001", "success": True},
+        {"old_id": "OLD002", "new_tag": "TAG002", "success": True},
+    ])
+
+
+def test_27_handoff_create_list_show() -> None:
+    """测试27：交接包创建、列表、详情查看"""
+    print("\n" + "=" * 60)
+    print("测试27：Handoff create/list/show")
+    print("=" * 60)
+
+    cleanup_test_state()
+    _cleanup_profiles()
+    _cleanup_inventories()
+    _cleanup_handoffs()
+
+    code, stdout, stderr = run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"), "list",
+    ])
+    assert_exit_code(code, 0, "空列表退出码", stdout, stderr)
+    assert_in_output("暂无交接包", stdout, "空列表提示", "stdout")
+    print("[INFO] 空交接包列表正确显示")
+
+    code, stdout, stderr = run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "create", "--batch-id", "nonexistent_batch_12345",
+    ])
+    assert_exit_code(code, 1, "不存在批次创建退出码", stdout, stderr)
+    assert_in_output("批次不存在", stdout + stderr, "批次不存在错误", "输出")
+    print("[INFO] 不存在批次创建正确报错")
+
+    _create_test_batch("test_handoff_batch_01")
+
+    code, stdout, stderr = run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "create", "--batch-id", "test_handoff_batch_01",
+        "--note", "测试交接备注", "--handoff-id", "handoff_test_01",
+    ])
+    assert_exit_code(code, 0, "创建退出码", stdout, stderr)
+    assert_in_output("交接包已创建", stdout, "创建成功提示", "stdout")
+    assert_in_output("handoff_test_01", stdout, "交接包ID", "stdout")
+    assert_in_output("test_handoff_batch_01", stdout, "批次ID", "stdout")
+    assert_in_output("completed", stdout, "批次状态", "stdout")
+    assert_in_output("测试交接备注", stdout, "备注", "stdout")
+    print("[INFO] 交接包创建成功")
+
+    code, stdout, stderr = run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "create", "--batch-id", "test_handoff_batch_01",
+        "--handoff-id", "handoff_test_01",
+    ])
+    assert_exit_code(code, 1, "同名交接包退出码", stdout, stderr)
+    assert_in_output("已存在", stdout + stderr, "同名冲突提示", "输出")
+    print("[INFO] 同名交接包创建正确拒绝")
+
+    code, stdout, stderr = run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"), "list",
+    ])
+    assert_exit_code(code, 0, "列表退出码", stdout, stderr)
+    assert_in_output("handoff_test_01", stdout, "列表显示交接包", "stdout")
+    assert_in_output("test_handoff_batch_01", stdout, "列表显示批次", "stdout")
+    print("[INFO] 交接包列表正确显示")
+
+    code, stdout, stderr = run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "show", "--handoff-id", "handoff_test_01",
+    ])
+    assert_exit_code(code, 0, "详情退出码", stdout, stderr)
+    assert_in_output("handoff_test_01", stdout, "详情显示ID", "stdout")
+    assert_in_output("test_handoff_batch_01", stdout, "详情显示批次", "stdout")
+    assert_in_output("completed", stdout, "详情显示状态", "stdout")
+    assert_in_output("操作记录数: 2", stdout, "详情显示操作数", "stdout")
+    assert_in_output("配置摘要", stdout, "详情显示配置摘要", "stdout")
+    assert_in_output("测试交接备注", stdout, "详情显示备注", "stdout")
+    print("[INFO] 交接包详情正确显示")
+
+    code, stdout, stderr = run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "show", "--handoff-id", "handoff_test_01", "--logs",
+    ])
+    assert_exit_code(code, 0, "带日志详情退出码", stdout, stderr)
+    assert_in_output("最近日志", stdout, "详情显示日志标题", "stdout")
+    print("[INFO] 交接包详情带日志正确显示")
+
+    code, stdout, stderr = run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "show", "--handoff-id", "nonexistent_handoff_123",
+    ])
+    assert_exit_code(code, 1, "不存在详情退出码", stdout, stderr)
+    assert_in_output("交接包不存在", stdout + stderr, "不存在错误", "输出")
+    print("[INFO] 不存在交接包详情正确报错")
+
+    print("[PASS] 测试27完成 - Handoff create/list/show 正确")
+
+
+def test_28_handoff_persistence_and_restart() -> None:
+    """测试28：交接包跨进程重启持久化"""
+    print("\n" + "=" * 60)
+    print("测试28：Handoff 跨重启持久化")
+    print("=" * 60)
+
+    cleanup_test_state()
+    _cleanup_profiles()
+    _cleanup_inventories()
+    _cleanup_handoffs()
+
+    _create_test_batch("test_persist_batch_01")
+
+    code, stdout, stderr = run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "create", "--batch-id", "test_persist_batch_01",
+        "--handoff-id", "handoff_persist_01",
+        "--note", "持久化测试",
+    ])
+    assert_exit_code(code, 0, "创建退出码", stdout, stderr)
+    assert_in_output("交接包已创建", stdout, "创建成功", "stdout")
+
+    hm_before = _get_handoff_manager()
+    handoffs_before = hm_before.list_handoffs()
+    assert len(handoffs_before) == 1, f"应只有1个交接包，实际 {len(handoffs_before)}"
+    assert handoffs_before[0].handoff_id == "handoff_persist_01"
+    assert handoffs_before[0].batch_id == "test_persist_batch_01"
+    assert handoffs_before[0].note == "持久化测试"
+    print("[INFO] 创建后交接包数据正确")
+
+    hm_restart = _get_handoff_manager()
+    handoffs_restart = hm_restart.list_handoffs()
+    assert len(handoffs_restart) == 1, f"重启后应仍有1个交接包，实际 {len(handoffs_restart)}"
+    assert handoffs_restart[0].handoff_id == "handoff_persist_01"
+    assert handoffs_restart[0].batch_id == "test_persist_batch_01"
+    assert handoffs_restart[0].note == "持久化测试"
+    print("[INFO] 模拟进程重启（新建Manager）后交接包依然存在")
+
+    h_restart = hm_restart.get_handoff("handoff_persist_01")
+    assert h_restart.handoff_id == "handoff_persist_01"
+    assert h_restart.batch_id == "test_persist_batch_01"
+    assert h_restart.batch_status == "completed"
+    assert h_restart.operations_count == 2
+    assert h_restart.note == "持久化测试"
+    print("[INFO] 重启后交接包详情读取正确")
+
+    code, stdout, stderr = run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"), "list",
+    ])
+    assert_exit_code(code, 0, "重启后列表退出码", stdout, stderr)
+    assert_in_output("handoff_persist_01", stdout, "重启后列表显示", "stdout")
+    print("[INFO] CLI 重启后列表仍能正确显示交接包")
+
+    operations_log = Path.home() / ".asset-retag" / "state" / "handoffs" / "handoff_operations.log"
+    assert operations_log.exists(), "操作日志文件应存在"
+    log_lines = operations_log.read_text(encoding="utf-8").strip().splitlines()
+    assert len(log_lines) >= 1, "操作日志应至少有1条记录"
+    print(f"[INFO] 操作日志存在，共 {len(log_lines)} 条记录")
+
+    print("[PASS] 测试28完成 - Handoff 跨重启持久化正确")
+
+
+def test_29_handoff_export_import_conflict() -> None:
+    """测试29：交接包导入导出 + 同名冲突拒绝 + 覆盖导入"""
+    print("\n" + "=" * 60)
+    print("测试29：Handoff export/import + 冲突拒绝 + 覆盖")
+    print("=" * 60)
+
+    cleanup_test_state()
+    _cleanup_profiles()
+    _cleanup_inventories()
+    _cleanup_handoffs()
+
+    _create_test_batch("test_export_batch_01")
+
+    run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "create", "--batch-id", "test_export_batch_01",
+        "--handoff-id", "handoff_export_01",
+        "--note", "导出测试交接包",
+    ])
+
+    export_dir = EXAMPLES_DIR / "handoff_exports"
+    if export_dir.exists():
+        shutil.rmtree(export_dir, ignore_errors=True)
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    code, stdout, stderr = run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "export", "--handoff-id", "handoff_export_01",
+        "--output", str(export_dir),
+    ])
+    assert_exit_code(code, 0, "导出退出码", stdout, stderr)
+    assert_in_output("交接包已导出", stdout, "导出成功提示", "stdout")
+
+    export_file = export_dir / "handoff_export_01_handoff.json"
+    assert export_file.exists(), f"导出文件应存在: {export_file}"
+    print(f"[INFO] 导出文件已创建: {export_file}")
+
+    with open(export_file, "r", encoding="utf-8") as f:
+        export_data = json.load(f)
+    assert export_data["handoff_version"] == "1.0"
+    assert export_data["handoff_id"] == "handoff_export_01"
+    assert export_data["batch_id"] == "test_export_batch_01"
+    assert export_data["note"] == "导出测试交接包"
+    assert "exported_at" in export_data
+    print("[INFO] 导出文件内容完整（含版本、ID、批次、备注、导出时间）")
+
+    _cleanup_handoffs()
+
+    code, stdout, stderr = run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "import", "--file", str(export_file),
+    ])
+    assert_exit_code(code, 0, "导入退出码", stdout, stderr)
+    assert_in_output("已导入交接包", stdout, "导入成功提示", "stdout")
+    assert_in_output("handoff_export_01", stdout, "导入显示ID", "stdout")
+    print("[INFO] 交接包导入成功")
+
+    hm_after = _get_handoff_manager()
+    imported = hm_after.get_handoff("handoff_export_01")
+    assert imported.batch_id == "test_export_batch_01"
+    assert imported.note == "导出测试交接包"
+    assert imported.batch_status == "completed"
+    print("[INFO] 导入后交接包数据完整正确")
+
+    code, stdout, stderr = run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "import", "--file", str(export_file),
+    ])
+    assert_exit_code(code, 1, "同名导入退出码", stdout, stderr)
+    assert_in_output("已存在", stdout + stderr, "同名冲突提示", "输出")
+    assert_in_output("--overwrite", stdout + stderr, "覆盖参数提示", "输出")
+    print("[INFO] 同名交接包导入正确拒绝")
+
+    modified_data = dict(export_data)
+    modified_data["note"] = "已修改的交接包"
+    modified_data["batch_status"] = "partial"
+    modified_file = export_dir / "handoff_export_01_modified_handoff.json"
+    with open(modified_file, "w", encoding="utf-8") as f:
+        json.dump(modified_data, f, ensure_ascii=False, indent=2)
+
+    code, stdout, stderr = run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "import", "--file", str(modified_file), "--overwrite",
+    ])
+    assert_exit_code(code, 0, "覆盖导入退出码", stdout, stderr)
+    assert_in_output("已导入交接包", stdout, "覆盖导入成功提示", "stdout")
+    assert_in_output("已覆盖", stdout, "覆盖标记", "stdout")
+    print("[INFO] 覆盖导入成功")
+
+    hm_overwritten = _get_handoff_manager()
+    overwritten = hm_overwritten.get_handoff("handoff_export_01")
+    assert overwritten.note == "已修改的交接包", f"备注应为已修改，实际 {overwritten.note}"
+    assert overwritten.batch_status == "partial"
+    print("[INFO] 覆盖导入后交接包内容已更新")
+
+    code, stdout, stderr = run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "export", "--handoff-id", "handoff_export_01",
+        "--output", str(export_file),
+    ])
+    assert_exit_code(code, 1, "同名导出退出码", stdout, stderr)
+    assert_in_output("已存在", stdout + stderr, "导出同名冲突提示", "输出")
+    assert_in_output("--overwrite", stdout + stderr, "覆盖参数提示", "输出")
+    print("[INFO] 导出同名文件正确拒绝")
+
+    code, stdout, stderr = run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "export", "--handoff-id", "handoff_export_01",
+        "--output", str(export_file), "--overwrite",
+    ])
+    assert_exit_code(code, 0, "覆盖导出退出码", stdout, stderr)
+    assert_in_output("已覆盖", stdout, "覆盖导出标记", "stdout")
+    print("[INFO] --overwrite 导出正确覆盖同名文件")
+
+    broken_file = export_dir / "broken_handoff.json"
+    broken_file.write_text("{this is not valid json}", encoding="utf-8")
+
+    code, stdout, stderr = run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "import", "--file", str(broken_file),
+    ])
+    assert_exit_code(code, 1, "损坏JSON导入退出码", stdout, stderr)
+    assert_in_output("JSON 解析失败", stdout + stderr, "JSON 错误提示", "输出")
+    assert_not_in_output("Traceback", stdout + stderr, "无 traceback 输出", "输出")
+    print("[INFO] 损坏 JSON 正确报错，无 traceback")
+
+    incomplete_file = export_dir / "incomplete_handoff.json"
+    incomplete_file.write_text(json.dumps({"only": "name"}, ensure_ascii=False), encoding="utf-8")
+
+    code, stdout, stderr = run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "import", "--file", str(incomplete_file),
+    ])
+    assert_exit_code(code, 1, "缺字段导入退出码", stdout, stderr)
+    assert_in_output("缺少必填字段", stdout + stderr, "缺字段提示", "输出")
+    assert_not_in_output("Traceback", stdout + stderr, "无 traceback 输出", "输出")
+    print("[INFO] 缺字段 JSON 正确报错，无 traceback")
+
+    code, stdout, stderr = run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "export", "--handoff-id", "nonexistent_handoff_xyz",
+        "--output", str(export_dir),
+    ])
+    assert_exit_code(code, 1, "导出不存在交接包退出码", stdout, stderr)
+    assert_in_output("交接包不存在", stdout + stderr, "不存在提示", "输出")
+    print("[INFO] 导出不存在交接包正确报错")
+
+    print("[PASS] 测试29完成 - Handoff export/import + 冲突 + 覆盖 + 错误处理 正确")
+
+
+def test_30_handoff_remove_and_errors() -> None:
+    """测试30：交接包删除 + 各种错误场景（无 traceback）"""
+    print("\n" + "=" * 60)
+    print("测试30：Handoff remove + 错误场景（无 traceback）")
+    print("=" * 60)
+
+    cleanup_test_state()
+    _cleanup_profiles()
+    _cleanup_inventories()
+    _cleanup_handoffs()
+
+    _create_test_batch("test_remove_batch_01")
+    _create_test_batch("test_remove_batch_02")
+
+    run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "create", "--batch-id", "test_remove_batch_01",
+        "--handoff-id", "handoff_remove_01",
+    ])
+    run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "create", "--batch-id", "test_remove_batch_02",
+        "--handoff-id", "handoff_remove_02",
+    ])
+
+    code, stdout, stderr = run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "remove", "--handoff-id", "handoff_remove_01",
+        "--skip-confirm",
+    ])
+    assert_exit_code(code, 0, "删除退出码", stdout, stderr)
+    assert_in_output("已删除交接包", stdout, "删除成功提示", "stdout")
+    assert_in_output("handoff_remove_01", stdout, "删除显示ID", "stdout")
+    print("[INFO] --skip-confirm 删除成功")
+
+    hm_after_remove = _get_handoff_manager()
+    remaining = hm_after_remove.list_handoffs()
+    assert len(remaining) == 1, f"删除后应剩1个，实际 {len(remaining)}"
+    assert remaining[0].handoff_id == "handoff_remove_02"
+    print("[INFO] 删除后只剩 handoff_remove_02")
+
+    code, stdout, stderr = run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "remove", "--handoff-id", "handoff_remove_01",
+        "--skip-confirm",
+    ])
+    assert_exit_code(code, 1, "删除不存在退出码", stdout, stderr)
+    assert_in_output("交接包不存在", stdout + stderr, "不存在错误", "输出")
+    assert_not_in_output("Traceback", stdout + stderr, "无 traceback", "输出")
+    print("[INFO] 删除不存在交接包正确报错，无 traceback")
+
+    export_dir = EXAMPLES_DIR / "handoff_exports"
+    if export_dir.exists():
+        shutil.rmtree(export_dir, ignore_errors=True)
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "export", "--handoff-id", "handoff_remove_02",
+        "--output", str(export_dir / "delete_me_handoff.json"),
+    ])
+
+    code, stdout, stderr = run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "remove", "--handoff-id", "handoff_remove_02",
+        "--skip-confirm",
+    ])
+    assert_exit_code(code, 0, "删除第二个退出码", stdout, stderr)
+    print("[INFO] 第二个交接包删除成功")
+
+    hm_all_gone = _get_handoff_manager()
+    assert len(hm_all_gone.list_handoffs()) == 0, "删除后应无交接包"
+    print("[INFO] 所有交接包已删除")
+
+    run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "import", "--file", str(export_dir / "delete_me_handoff.json"),
+    ])
+    hm_after_import = _get_handoff_manager()
+    assert len(hm_after_import.list_handoffs()) == 1, "导入后应有1个"
+    print("[INFO] 删除后重新导入成功")
+
+    operations_log = Path.home() / ".asset-retag" / "state" / "handoffs" / "handoff_operations.log"
+    log_content = operations_log.read_text(encoding="utf-8")
+    assert '"operation": "create"' in log_content, "操作日志应包含 create"
+    assert '"operation": "remove"' in log_content, "操作日志应包含 remove"
+    assert '"operation": "export"' in log_content, "操作日志应包含 export"
+    assert '"operation": "import"' in log_content, "操作日志应包含 import"
+    print("[INFO] 操作日志正确记录了 create/remove/export/import 操作")
+
+    code, stdout, stderr = run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "list",
+    ])
+    assert_exit_code(code, 0, "正常列表退出码", stdout, stderr)
+    assert_not_in_output("Traceback", stdout + stderr, "列表无 traceback", "输出")
+    print("[INFO] 正常 list 命令无 traceback")
+
+    code, stdout, stderr = run_cli([
+        "handoff", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "show", "--handoff-id", "handoff_remove_02",
+    ])
+    assert_exit_code(code, 0, "正常 show 退出码", stdout, stderr)
+    assert_not_in_output("Traceback", stdout + stderr, "show 无 traceback", "输出")
+    print("[INFO] 正常 show 命令无 traceback")
+
+    print("[PASS] 测试30完成 - Handoff remove + 错误场景（无 traceback）正确")
+
+
 def main() -> int:
     """主测试函数"""
     print("=" * 70)
@@ -2291,6 +2756,10 @@ def main() -> int:
         test_24_inventory_export_import_conflict,
         test_25_inventory_diff,
         test_26_inventory_remove_and_scan_overwrite,
+        test_27_handoff_create_list_show,
+        test_28_handoff_persistence_and_restart,
+        test_29_handoff_export_import_conflict,
+        test_30_handoff_remove_and_errors,
     ]
 
     passed = 0
@@ -2301,6 +2770,7 @@ def main() -> int:
             cleanup_test_state()
             _cleanup_profiles()
             _cleanup_inventories()
+            _cleanup_handoffs()
             test()
             passed += 1
         except Exception as e:
@@ -2337,6 +2807,7 @@ def main() -> int:
         cleanup_test_state()
         _cleanup_profiles()
         _cleanup_inventories()
+        _cleanup_handoffs()
     except Exception:
         pass
 
