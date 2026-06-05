@@ -204,6 +204,55 @@ asset-retag batch import --snapshot ./snapshots/batch_xxx_snapshot.json --profil
 
 > 配置优先级：`--config` > `--profile` > 自动发现 `./config.yaml` > 默认档案 > 内置默认值
 
+### 8. 资产清单 (Inventory) 管理
+
+```bash
+# 扫描 source_root 生成资产清单（记录相对路径、大小、mtime、扩展名、所属旧编号）
+asset-retag inventory -c ./config.yaml scan --name baseline_2024 --description "2024年基线清单"
+
+# 覆盖同名清单
+asset-retag inventory -c ./config.yaml scan --name baseline_2024 --overwrite
+
+# 查看所有清单（跨进程重启可见）
+asset-retag inventory -c ./config.yaml list
+asset-retag inventory --profile production list
+
+# 查看清单详情（含文件列表、旧编号统计）
+asset-retag inventory -c ./config.yaml show --name baseline_2024
+
+# 将清单与当前 source_root 目录比对（新增/删除/变更文件）
+asset-retag inventory -c ./config.yaml diff --name baseline_2024
+
+# 删除清单
+asset-retag inventory -c ./config.yaml remove --name baseline_2024 --skip-confirm
+
+# 导出清单到 JSON
+asset-retag inventory -c ./config.yaml export --name baseline_2024 --output ./snapshots/
+asset-retag inventory -c ./config.yaml export --name baseline_2024 --output ./snapshots/baseline.json
+
+# 从 JSON 导入清单（同名默认拒绝）
+asset-retag inventory -c ./config.yaml import --file ./snapshots/baseline_2024_inventory.json
+
+# 强制覆盖同名清单（原子替换）
+asset-retag inventory -c ./config.yaml import --file ./snapshots/baseline_2024_inventory.json --overwrite
+```
+
+> **清单特性**：
+> - 清单数据存储在 `state_dir/inventories/`，**跨进程重启保持**
+> - 每个清单条目记录：相对路径、文件大小、修改时间(mtime)、扩展名、所属旧编号
+> - 旧编号自动从目录名提取（如 `OLD001_laptop/` -> `OLD001`）
+> - 扫描、导入导出、删除操作均写入操作日志
+> - 导入导出使用 JSON 格式，支持版本校验和必填字段检查
+> - 同名导入默认拒绝，`--overwrite` 时原子替换（先写临时文件再 replace，不留半成品）
+> - 错误场景清晰报错：配置不存在、空目录、损坏 JSON、缺字段、无写权限、同名冲突
+
+#### diff 结果解读
+
+`inventory diff` 输出三类变化：
+- **新增 [+]**：当前目录有但清单中没有的文件
+- **删除 [-]**：清单中有但当前目录没有的文件
+- **变更 [~]**：两边都存在但文件大小或修改时间不同的文件
+
 ## 📋 配置说明 (`config.yaml`)
 
 ```yaml
@@ -415,6 +464,73 @@ asset-retag batch import --snapshot ./snapshots/bad_status.json --skip-confirm
 # 目标目录无权限
 asset-retag batch import --snapshot ./snapshots/test_normal_run_001_snapshot.json --config /root/restricted_config.yaml --skip-confirm
 # 输出：[ERR] 快照错误: 目标目录权限不足，无法创建 state/log 目录: ...
+
+# ========== 配置档案 (Profile) 管理 ==========
+
+# 1. 添加档案
+asset-retag profile add --name prod --config ./config.yaml --description "生产环境"
+asset-retag profile add --name test --config ./examples/config.yaml --description "测试环境"
+
+# 2. 查看所有档案
+asset-retag profile list
+
+# 3. 查看档案详情
+asset-retag profile show --name prod
+
+# 4. 设置默认档案（跨进程重启保持）
+asset-retag profile use --name prod
+
+# 5. 撤销默认档案切换
+asset-retag profile undo-use
+
+# 6. 删除档案
+asset-retag profile remove --name test --skip-confirm
+
+# 7. 导出档案
+asset-retag profile export --name prod --output ./snapshots/
+asset-retag profile export --name prod --output ./snapshots/prod_profile.json --overwrite
+
+# 8. 导入档案（同名默认拒绝）
+asset-retag profile import --file ./snapshots/prod_profile.json
+
+# 9. 覆盖导入（原子替换）
+asset-retag profile import --file ./snapshots/prod_profile.json --overwrite
+
+# 10. 使用档案执行命令
+asset-retag dry-run --profile prod -m ./mapping.csv
+asset-retag run --profile prod -m ./mapping.csv --skip-confirm
+asset-retag list --profile prod
+asset-retag show --batch-id batch_xxx --profile prod
+asset-retag logs --batch-id batch_xxx --profile prod
+asset-retag rollback --batch-id batch_xxx --profile prod --dry-run
+asset-retag batch export --batch-id batch_xxx --profile prod --output-dir ./snapshots
+asset-retag batch import --snapshot ./snapshots/batch_xxx_snapshot.json --profile prod --skip-confirm
+
+# ========== Profile 错误提示示例 ==========
+
+# 添加同名档案（默认拒绝）
+asset-retag profile add --name prod --config ./other.yaml
+# 输出：[ERR] 档案冲突: 档案 'prod' 已存在。如需覆盖，请使用 --overwrite 参数。
+
+# 档案不存在
+asset-retag profile show --name nonexistent
+# 输出：[ERR] 档案不存在: 档案不存在: nonexistent
+
+# 使用不存在的档案
+asset-retag dry-run --profile nonexistent -m mapping.csv
+# 输出：档案不存在: nonexistent
+
+# 导入损坏 JSON
+asset-retag profile import --file ./broken.json
+# 输出：[ERR] 档案格式错误: 导入文件 JSON 解析失败，文件可能已损坏: ...
+
+# 导入缺少字段
+asset-retag profile import --file ./incomplete.json
+# 输出：[ERR] 档案格式错误: 导入数据缺少必填字段: profile_version
+
+# 配置文件不存在时添加档案
+asset-retag profile add --name bad --config ./nonexistent.yaml
+# 输出：[ERR] 档案错误: 配置文件不存在: .../nonexistent.yaml
 ```
 
 ## ⚠️ 注意事项

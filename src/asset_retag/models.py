@@ -130,3 +130,106 @@ class Profile:
             updated_at=datetime.fromisoformat(data["updated_at"]),
             description=data.get("description", ""),
         )
+
+
+@dataclass
+class InventoryItem:
+    """资产清单条目 - 单个文件信息"""
+    relative_path: str
+    file_size: int
+    mtime: float
+    extension: str
+    old_id: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "relative_path": self.relative_path,
+            "file_size": self.file_size,
+            "mtime": self.mtime,
+            "extension": self.extension,
+            "old_id": self.old_id,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "InventoryItem":
+        return cls(
+            relative_path=data["relative_path"],
+            file_size=data["file_size"],
+            mtime=data["mtime"],
+            extension=data["extension"],
+            old_id=data.get("old_id", ""),
+        )
+
+
+@dataclass
+class InventoryDiff:
+    """清单比对结果"""
+    added: List[InventoryItem] = field(default_factory=list)
+    removed: List[InventoryItem] = field(default_factory=list)
+    modified: List[Dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def has_changes(self) -> bool:
+        return len(self.added) > 0 or len(self.removed) > 0 or len(self.modified) > 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "added": [item.to_dict() for item in self.added],
+            "removed": [item.to_dict() for item in self.removed],
+            "modified": [
+                {
+                    "path": m["path"],
+                    "old": m["old"].to_dict() if isinstance(m.get("old"), InventoryItem) else m.get("old"),
+                    "new": m["new"].to_dict() if isinstance(m.get("new"), InventoryItem) else m.get("new"),
+                }
+                for m in self.modified
+            ],
+        }
+
+
+@dataclass
+class Inventory:
+    """资产清单"""
+    name: str
+    source_root: Path
+    created_at: datetime
+    updated_at: datetime
+    items: List[InventoryItem] = field(default_factory=list)
+    description: str = ""
+
+    @property
+    def file_count(self) -> int:
+        return len(self.items)
+
+    @property
+    def total_size(self) -> int:
+        return sum(item.file_size for item in self.items)
+
+    def get_old_ids(self) -> List[str]:
+        """获取所有唯一旧编号"""
+        return sorted(set(item.old_id for item in self.items if item.old_id))
+
+    def get_items_by_old_id(self, old_id: str) -> List[InventoryItem]:
+        """按旧编号筛选条目"""
+        return [item for item in self.items if item.old_id == old_id]
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "name": self.name,
+            "source_root": str(self.source_root),
+            "created_at": self.created_at.isoformat(),
+            "updated_at": self.updated_at.isoformat(),
+            "items": [item.to_dict() for item in self.items],
+            "description": self.description,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Inventory":
+        return cls(
+            name=data["name"],
+            source_root=Path(data["source_root"]),
+            created_at=datetime.fromisoformat(data["created_at"]),
+            updated_at=datetime.fromisoformat(data["updated_at"]),
+            items=[InventoryItem.from_dict(item) for item in data.get("items", [])],
+            description=data.get("description", ""),
+        )

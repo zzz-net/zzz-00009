@@ -1357,6 +1357,29 @@ def _get_profile_manager():
     return ProfileManager()
 
 
+def _cleanup_inventories() -> None:
+    """清理测试清单数据"""
+    inventory_dir = Path.home() / ".asset-retag" / "state" / "inventories"
+    if inventory_dir.exists():
+        try:
+            shutil.rmtree(inventory_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+
+def _get_inventory_manager():
+    """获取 InventoryManager 实例（用于测试内部方法）"""
+    from asset_retag.inventory import InventoryManager
+    from asset_retag.models import AppConfig, OperationType
+    config = AppConfig(
+        source_root=EXAMPLES_DIR / "source",
+        target_root=EXAMPLES_DIR / "target",
+        operation=OperationType.COPY,
+        report_dir=EXAMPLES_DIR / "reports",
+    )
+    return InventoryManager(config)
+
+
 def test_17_profile_add_list_show() -> None:
     """测试17：档案添加、列表、详情查看"""
     print("\n" + "=" * 60)
@@ -1862,6 +1885,379 @@ report_dir: {custom_report_dir}
     print("[PASS] 测试21完成 - 批次命令通过 profile 正确路由 state/log/report")
 
 
+def test_22_inventory_scan_list_show() -> None:
+    """测试22：清单扫描、列表、详情查看"""
+    print("\n" + "=" * 60)
+    print("测试22：Inventory scan/list/show")
+    print("=" * 60)
+
+    cleanup_test_state()
+    _cleanup_inventories()
+
+    code, stdout, stderr = run_cli([
+        "inventory", "-c", str(EXAMPLES_DIR / "config.yaml"), "list",
+    ])
+    assert_exit_code(code, 0, "空列表退出码", stdout, stderr)
+    assert_in_output("暂无资产清单", stdout, "空列表提示", "stdout")
+    print("[INFO] 空清单列表正确显示")
+
+    code, stdout, stderr = run_cli([
+        "inventory", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "scan", "--name", "baseline_v1",
+        "--description", "初始基线清单",
+    ])
+    assert_exit_code(code, 0, "扫描退出码", stdout, stderr)
+    assert_in_output("已扫描清单", stdout, "扫描成功提示", "stdout")
+    assert_in_output("baseline_v1", stdout, "清单名称", "stdout")
+    assert_in_output("OLD001", stdout, "旧编号 OLD001", "stdout")
+    print("[INFO] 清单扫描成功")
+
+    code, stdout, stderr = run_cli([
+        "inventory", "-c", str(EXAMPLES_DIR / "config.yaml"), "list",
+    ])
+    assert_exit_code(code, 0, "列表退出码", stdout, stderr)
+    assert_in_output("baseline_v1", stdout, "列表显示 baseline_v1", "stdout")
+    assert_in_output("初始基线清单", stdout, "列表显示描述", "stdout")
+    print("[INFO] 清单列表正确显示")
+
+    code, stdout, stderr = run_cli([
+        "inventory", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "show", "--name", "baseline_v1",
+    ])
+    assert_exit_code(code, 0, "详情退出码", stdout, stderr)
+    assert_in_output("baseline_v1", stdout, "详情显示名称", "stdout")
+    assert_in_output("初始基线清单", stdout, "详情显示描述", "stdout")
+    assert_in_output("OLD001", stdout, "详情显示旧编号", "stdout")
+    assert_in_output("OLD002", stdout, "详情显示旧编号 OLD002", "stdout")
+    assert_in_output("OLD003", stdout, "详情显示旧编号 OLD003", "stdout")
+    print("[INFO] 清单详情正确显示")
+
+    code, stdout, stderr = run_cli([
+        "inventory", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "show", "--name", "nonexistent_inv",
+    ])
+    assert_exit_code(code, 1, "不存在清单详情退出码", stdout, stderr)
+    assert_in_output("清单不存在", stdout + stderr, "清单不存在错误", "输出")
+    print("[INFO] 不存在清单正确报错")
+
+    print("[PASS] 测试22完成 - Inventory scan/list/show 正确")
+
+
+def test_23_inventory_persistence_and_errors() -> None:
+    """测试23：清单跨进程持久化 + 配置错误 + 空目录错误"""
+    print("\n" + "=" * 60)
+    print("测试23：Inventory 持久化 + 错误处理")
+    print("=" * 60)
+
+    cleanup_test_state()
+    _cleanup_inventories()
+
+    run_cli([
+        "inventory", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "scan", "--name", "persist_test", "--description", "持久化测试",
+    ])
+
+    pm_after = _get_inventory_manager()
+    inv_list = pm_after.list_inventories()
+    assert len(inv_list) == 1, f"应存在 1 个清单，实际 {len(inv_list)}"
+    assert inv_list[0]["name"] == "persist_test"
+    print("[INFO] 新实例化后能读取到清单（持久化正确）")
+
+    pm_restart = _get_inventory_manager()
+    inv = pm_restart.get_inventory("persist_test")
+    assert inv.name == "persist_test"
+    assert inv.file_count == 5, f"应有 5 个文件，实际 {inv.file_count}"
+    assert inv.description == "持久化测试"
+    print("[INFO] 跨进程重启后清单数据完整正确")
+
+    nonexistent_config = EXAMPLES_DIR / "config_nonexistent_12345.yaml"
+    empty_source_dir = EXAMPLES_DIR / "empty_source_test"
+    if empty_source_dir.exists():
+        shutil.rmtree(empty_source_dir, ignore_errors=True)
+    empty_source_dir.mkdir(parents=True, exist_ok=True)
+
+    empty_config = EXAMPLES_DIR / "config_empty_test.yaml"
+    empty_config.write_text(f"""
+source_root: {empty_source_dir}
+target_root: ./examples/target
+operation: copy
+""", encoding="utf-8")
+
+    code, stdout, stderr = run_cli([
+        "inventory", "-c", str(empty_config),
+        "scan", "--name", "empty_test",
+    ])
+    assert_exit_code(code, 1, "空目录扫描退出码", stdout, stderr)
+    assert_in_output("为空", stdout + stderr, "空目录错误", "输出")
+    print("[INFO] 空目录扫描正确报错")
+
+    try:
+        empty_config.unlink()
+    except Exception:
+        pass
+    if empty_source_dir.exists():
+        try:
+            shutil.rmtree(empty_source_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+    print("[PASS] 测试23完成 - Inventory 持久化和错误处理正确")
+
+
+def test_24_inventory_export_import_conflict() -> None:
+    """测试24：清单导入导出 + 同名冲突拒绝 + 覆盖导入 + 格式错误"""
+    print("\n" + "=" * 60)
+    print("测试24：Inventory export/import + 冲突拒绝 + 覆盖")
+    print("=" * 60)
+
+    cleanup_test_state()
+    _cleanup_inventories()
+
+    run_cli([
+        "inventory", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "scan", "--name", "export_test", "--description", "导出测试清单",
+    ])
+
+    export_dir = EXAMPLES_DIR / "snapshots_inv_test"
+    if export_dir.exists():
+        shutil.rmtree(export_dir, ignore_errors=True)
+    export_dir.mkdir(parents=True, exist_ok=True)
+
+    code, stdout, stderr = run_cli([
+        "inventory", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "export", "--name", "export_test", "--output", str(export_dir),
+    ])
+    assert_exit_code(code, 0, "导出退出码", stdout, stderr)
+    assert_in_output("清单已导出", stdout, "导出成功提示", "stdout")
+
+    export_file = export_dir / "export_test_inventory.json"
+    assert export_file.exists(), f"导出文件应存在: {export_file}"
+    print(f"[INFO] 导出文件已创建: {export_file}")
+
+    with open(export_file, "r", encoding="utf-8") as f:
+        export_data = json.load(f)
+    assert export_data["inventory_version"] == "1.0"
+    assert export_data["inventory"]["name"] == "export_test"
+    assert export_data["inventory"]["description"] == "导出测试清单"
+    assert len(export_data["inventory"]["items"]) == 5
+    print("[INFO] 导出文件内容完整")
+
+    code, stdout, stderr = run_cli([
+        "inventory", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "import", "--file", str(export_file),
+    ])
+    assert_exit_code(code, 1, "同名导入退出码", stdout, stderr)
+    assert_in_output("已存在", stdout + stderr, "同名冲突提示", "输出")
+    assert_in_output("--overwrite", stdout + stderr, "覆盖参数提示", "输出")
+    print("[INFO] 同名导入正确拒绝")
+
+    modified_export = export_dir / "export_test_modified_inventory.json"
+    export_data["inventory"]["description"] = "已修改的清单"
+    export_data["inventory"]["items"][0]["file_size"] = 9999
+    with open(modified_export, "w", encoding="utf-8") as f:
+        json.dump(export_data, f, ensure_ascii=False, indent=2)
+
+    code, stdout, stderr = run_cli([
+        "inventory", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "import", "--file", str(modified_export), "--overwrite",
+    ])
+    assert_exit_code(code, 0, "覆盖导入退出码", stdout, stderr)
+    assert_in_output("已导入清单", stdout, "覆盖导入成功提示", "stdout")
+    assert_in_output("已覆盖", stdout, "覆盖标记", "stdout")
+    print("[INFO] 覆盖导入成功")
+
+    pm_after = _get_inventory_manager()
+    updated = pm_after.get_inventory("export_test")
+    assert updated.description == "已修改的清单", f"描述应为已修改，实际 {updated.description}"
+    assert updated.items[0].file_size == 9999, f"首条目大小应为 9999"
+    print("[INFO] 覆盖导入后清单内容已更新")
+
+    broken_file = export_dir / "broken_inv.json"
+    broken_file.write_text("{this is not valid json", encoding="utf-8")
+
+    code, stdout, stderr = run_cli([
+        "inventory", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "import", "--file", str(broken_file),
+    ])
+    assert_exit_code(code, 1, "损坏JSON导入退出码", stdout, stderr)
+    assert_in_output("JSON 解析失败", stdout + stderr, "JSON 错误提示", "输出")
+    print("[INFO] 损坏 JSON 正确报错")
+
+    incomplete_file = export_dir / "incomplete_inv.json"
+    incomplete_file.write_text(json.dumps({"only": "name"}, ensure_ascii=False), encoding="utf-8")
+
+    code, stdout, stderr = run_cli([
+        "inventory", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "import", "--file", str(incomplete_file),
+    ])
+    assert_exit_code(code, 1, "缺字段导入退出码", stdout, stderr)
+    assert_in_output("缺少必填字段", stdout + stderr, "缺字段提示", "输出")
+    print("[INFO] 缺字段 JSON 正确报错")
+
+    try:
+        shutil.rmtree(export_dir, ignore_errors=True)
+    except Exception:
+        pass
+
+    print("[PASS] 测试24完成 - Inventory 导入导出/冲突/覆盖/格式错误正确")
+
+
+def test_25_inventory_diff() -> None:
+    """测试25：清单 diff 比对 - 新增、删除、变更文件"""
+    print("\n" + "=" * 60)
+    print("测试25：Inventory diff 比对")
+    print("=" * 60)
+
+    cleanup_test_state()
+    _cleanup_inventories()
+
+    run_cli([
+        "inventory", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "scan", "--name", "diff_baseline", "--description", "diff 基线",
+    ])
+
+    code, stdout, stderr = run_cli([
+        "inventory", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "diff", "--name", "diff_baseline",
+    ])
+    assert_exit_code(code, 0, "无差异 diff 退出码", stdout, stderr)
+    assert_in_output("一致", stdout, "一致提示", "stdout")
+    assert_in_output("没有变化", stdout, "无变化提示", "stdout")
+    print("[INFO] 目录无变化时 diff 正确提示一致")
+
+    test_source_dir = EXAMPLES_DIR / "source_diff_test"
+    if test_source_dir.exists():
+        shutil.rmtree(test_source_dir, ignore_errors=True)
+    shutil.copytree(EXAMPLES_DIR / "source", test_source_dir)
+
+    new_file = test_source_dir / "OLD004_newitem" / "new_photo.jpg"
+    new_file.parent.mkdir(parents=True, exist_ok=True)
+    new_file.write_bytes(b"new file content test")
+
+    removed_dir = test_source_dir / "OLD003_software"
+    shutil.rmtree(removed_dir)
+
+    modified_file = test_source_dir / "OLD001_laptop" / "front.jpg"
+    modified_file.write_bytes(b"modified content bigger than before")
+
+    diff_config = EXAMPLES_DIR / "config_diff_test.yaml"
+    diff_config.write_text(f"""
+source_root: {test_source_dir}
+target_root: ./examples/target
+operation: copy
+report_dir: ./examples/reports
+""", encoding="utf-8")
+
+    code, stdout, stderr = run_cli([
+        "inventory", "-c", str(diff_config),
+        "diff", "--name", "diff_baseline",
+    ])
+    assert_exit_code(code, 0, "有差异 diff 退出码", stdout, stderr)
+    assert_in_output("新增: 1", stdout, "新增文件数", "stdout")
+    assert_in_output("删除: 1", stdout, "删除文件数", "stdout")
+    assert_in_output("变更: 1", stdout, "变更文件数", "stdout")
+    assert_in_output("[新增文件]", stdout, "新增文件标题", "stdout")
+    assert_in_output("[删除文件]", stdout, "删除文件标题", "stdout")
+    assert_in_output("[变更文件]", stdout, "变更文件标题", "stdout")
+    assert_in_output("OLD004", stdout, "新增 OLD004", "stdout")
+    assert_in_output("OLD003", stdout, "删除 OLD003", "stdout")
+    assert_in_output("OLD001_laptop", stdout, "变更 OLD001", "stdout")
+    print("[INFO] 有差异时 diff 输出正确的新增/删除/变更")
+
+    code, stdout, stderr = run_cli([
+        "inventory", "-c", str(diff_config),
+        "show", "--name", "diff_baseline",
+    ])
+    assert_exit_code(code, 0, "跨配置查看清单退出码", stdout, stderr)
+    assert_in_output("diff_baseline", stdout, "跨配置查看清单名称", "stdout")
+    print("[INFO] 不同配置下也能正确读取清单（存储独立于配置）")
+
+    try:
+        diff_config.unlink()
+    except Exception:
+        pass
+    if test_source_dir.exists():
+        try:
+            shutil.rmtree(test_source_dir, ignore_errors=True)
+        except Exception:
+            pass
+
+    print("[PASS] 测试25完成 - Inventory diff 比对正确")
+
+
+def test_26_inventory_remove_and_scan_overwrite() -> None:
+    """测试26：清单删除 + 扫描覆盖 + 操作日志"""
+    print("\n" + "=" * 60)
+    print("测试26：Inventory remove + scan overwrite")
+    print("=" * 60)
+
+    cleanup_test_state()
+    _cleanup_inventories()
+
+    run_cli([
+        "inventory", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "scan", "--name", "to_remove", "--description", "待删除清单",
+    ])
+    run_cli([
+        "inventory", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "scan", "--name", "to_keep", "--description", "保留清单",
+    ])
+
+    code, stdout, stderr = run_cli([
+        "inventory", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "remove", "--name", "to_remove", "--skip-confirm",
+    ])
+    assert_exit_code(code, 0, "删除清单退出码", stdout, stderr)
+    assert_in_output("已删除清单", stdout, "删除成功提示", "stdout")
+    assert_in_output("to_remove", stdout, "删除显示名称", "stdout")
+    print("[INFO] 清单删除成功")
+
+    code, stdout, stderr = run_cli([
+        "inventory", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "remove", "--name", "to_remove", "--skip-confirm",
+    ])
+    assert_exit_code(code, 1, "删除不存在清单退出码", stdout, stderr)
+    assert_in_output("清单不存在", stdout + stderr, "删除不存在报错", "输出")
+    print("[INFO] 删除不存在清单正确报错")
+
+    pm_after = _get_inventory_manager()
+    inv_list = pm_after.list_inventories()
+    assert len(inv_list) == 1, f"删除后应剩 1 个清单，实际 {len(inv_list)}"
+    assert inv_list[0]["name"] == "to_keep"
+    print("[INFO] 删除后只剩 to_keep 清单（正确）")
+
+    code, stdout, stderr = run_cli([
+        "inventory", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "scan", "--name", "to_keep",
+    ])
+    assert_exit_code(code, 1, "同名扫描拒绝退出码", stdout, stderr)
+    assert_in_output("已存在", stdout + stderr, "同名扫描拒绝提示", "输出")
+    assert_in_output("--overwrite", stdout + stderr, "覆盖参数提示", "输出")
+    print("[INFO] 同名扫描默认拒绝")
+
+    code, stdout, stderr = run_cli([
+        "inventory", "-c", str(EXAMPLES_DIR / "config.yaml"),
+        "scan", "--name", "to_keep", "--description", "已覆盖描述", "--overwrite",
+    ])
+    assert_exit_code(code, 0, "覆盖扫描退出码", stdout, stderr)
+    assert_in_output("已扫描清单", stdout, "覆盖扫描成功提示", "stdout")
+    print("[INFO] --overwrite 时同名扫描成功覆盖")
+
+    inv_updated = pm_after.get_inventory("to_keep")
+    assert inv_updated.description == "已覆盖描述", "覆盖后描述应更新"
+    print("[INFO] 覆盖扫描后描述已更新")
+
+    inv_dir = Path.home() / ".asset-retag" / "state" / "inventories"
+    op_log = inv_dir / "inventory_operations.log"
+    assert op_log.exists(), "操作日志文件应存在"
+    log_content = op_log.read_text(encoding="utf-8")
+    assert "scan" in log_content, "操作日志应包含 scan"
+    assert "remove" in log_content, "操作日志应包含 remove"
+    print("[INFO] 操作日志已记录 scan 和 remove 操作")
+
+    print("[PASS] 测试26完成 - Inventory remove/overwrite/日志正确")
+
+
 def main() -> int:
     """主测试函数"""
     print("=" * 70)
@@ -1890,6 +2286,11 @@ def main() -> int:
         test_19_profile_remove,
         test_20_profile_export_import_conflict,
         test_21_profile_in_batch_commands,
+        test_22_inventory_scan_list_show,
+        test_23_inventory_persistence_and_errors,
+        test_24_inventory_export_import_conflict,
+        test_25_inventory_diff,
+        test_26_inventory_remove_and_scan_overwrite,
     ]
 
     passed = 0
@@ -1899,6 +2300,7 @@ def main() -> int:
         try:
             cleanup_test_state()
             _cleanup_profiles()
+            _cleanup_inventories()
             test()
             passed += 1
         except Exception as e:
@@ -1934,6 +2336,7 @@ def main() -> int:
     try:
         cleanup_test_state()
         _cleanup_profiles()
+        _cleanup_inventories()
     except Exception:
         pass
 

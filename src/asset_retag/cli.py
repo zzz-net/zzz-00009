@@ -40,6 +40,13 @@ from .profiles import (
     ProfileNotFoundError,
     ProfileManager,
 )
+from .inventory import (
+    InventoryError,
+    InventoryFormatError,
+    InventoryConflictError,
+    InventoryNotFoundError,
+    InventoryManager,
+)
 
 
 # 安全输出（替代 emoji，避免 Windows 编码问题）
@@ -972,6 +979,275 @@ def profile_import_cmd(import_file: str, overwrite: bool) -> None:
         sys.exit(1)
     except Exception as e:
         _safe_echo(f"\n{_ICON_ERR} 导入档案失败: {e}", err=True)
+        sys.exit(1)
+
+
+@main.group()
+@click.option("--config", "-c", type=click.Path(exists=True, dir_okay=False), help="配置文件路径")
+@click.option("--profile", "-p", help="配置档案名称")
+@click.pass_context
+def inventory(ctx: click.Context, config: Optional[str], profile: Optional[str]) -> None:
+    """资产清单管理"""
+    app_config, _ = _resolve_config(config, profile)
+    ctx.ensure_object(dict)
+    ctx.obj["app_config"] = app_config
+
+
+@inventory.command("scan")
+@click.option("--name", "-n", required=True, help="清单名称")
+@click.option("--description", "-d", default="", help="清单描述")
+@click.option("--overwrite", is_flag=True, help="覆盖已存在的同名清单")
+@click.pass_context
+def inventory_scan(ctx: click.Context, name: str, description: str, overwrite: bool) -> None:
+    """扫描 source_root 生成资产清单"""
+    try:
+        app_config = ctx.obj["app_config"]
+        inv_mgr = InventoryManager(app_config)
+        inv = inv_mgr.scan(name, description=description, overwrite=overwrite)
+
+        _safe_echo(f"{_ICON_OK} 已扫描清单 '{name}'")
+        _safe_echo(f"   源目录: {inv.source_root}")
+        _safe_echo(f"   文件数: {inv.file_count}")
+        _safe_echo(f"   总大小: {inv.total_size} 字节")
+        old_ids = inv.get_old_ids()
+        if old_ids:
+            _safe_echo(f"   旧编号: {', '.join(old_ids[:10])}" + (" ..." if len(old_ids) > 10 else ""))
+        if description:
+            _safe_echo(f"   描述: {description}")
+        if overwrite:
+            _safe_echo(f"   (已覆盖同名清单)")
+    except InventoryConflictError as e:
+        _safe_echo(f"\n{_ICON_ERR} 清单冲突: {e}", err=True)
+        sys.exit(1)
+    except InventoryFormatError as e:
+        _safe_echo(f"\n{_ICON_ERR} 清单格式错误: {e}", err=True)
+        sys.exit(1)
+    except InventoryError as e:
+        _safe_echo(f"\n{_ICON_ERR} 清单错误: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        _safe_echo(f"\n{_ICON_ERR} 扫描失败: {e}", err=True)
+        traceback.print_exc()
+        sys.exit(1)
+
+
+@inventory.command("list")
+@click.pass_context
+def inventory_list(ctx: click.Context) -> None:
+    """列出所有资产清单"""
+    try:
+        app_config = ctx.obj["app_config"]
+        inv_mgr = InventoryManager(app_config)
+        inventories = inv_mgr.list_inventories()
+
+        if not inventories:
+            _safe_echo(f"{_ICON_INFO} 暂无资产清单，使用 inventory scan 创建")
+            return
+
+        _safe_echo(f"\n共有 {len(inventories)} 个资产清单：")
+        _safe_echo("-" * 90)
+        for inv in inventories:
+            _safe_echo(f"  {inv['name']}")
+            _safe_echo(f"    源目录: {inv.get('source_root', '-')}")
+            _safe_echo(f"    文件数: {inv.get('file_count', 0)}, 总大小: {inv.get('total_size', 0)} 字节")
+            if inv.get("description"):
+                _safe_echo(f"    描述: {inv['description']}")
+            _safe_echo(f"    更新时间: {inv.get('updated_at', '-')}")
+        _safe_echo("-" * 90)
+    except InventoryError as e:
+        _safe_echo(f"\n{_ICON_ERR} 清单错误: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        _safe_echo(f"\n{_ICON_ERR} 列出清单失败: {e}", err=True)
+        sys.exit(1)
+
+
+@inventory.command("show")
+@click.option("--name", "-n", required=True, help="清单名称")
+@click.pass_context
+def inventory_show(ctx: click.Context, name: str) -> None:
+    """显示资产清单详情"""
+    try:
+        app_config = ctx.obj["app_config"]
+        inv_mgr = InventoryManager(app_config)
+        inv = inv_mgr.get_inventory(name)
+
+        _safe_echo(f"\n清单名称: {inv.name}")
+        _safe_echo(f"源目录: {inv.source_root}")
+        _safe_echo(f"文件数: {inv.file_count}")
+        _safe_echo(f"总大小: {inv.total_size} 字节")
+        _safe_echo(f"创建时间: {inv.created_at.strftime('%Y-%m-%d %H:%M:%S')}")
+        _safe_echo(f"更新时间: {inv.updated_at.strftime('%Y-%m-%d %H:%M:%S')}")
+        if inv.description:
+            _safe_echo(f"描述: {inv.description}")
+
+        old_ids = inv.get_old_ids()
+        if old_ids:
+            _safe_echo(f"\n包含 {len(old_ids)} 个旧编号：")
+            for oid in old_ids[:20]:
+                items = inv.get_items_by_old_id(oid)
+                _safe_echo(f"  {oid}: {len(items)} 个文件")
+            if len(old_ids) > 20:
+                _safe_echo(f"  ... 还有 {len(old_ids) - 20} 个旧编号")
+
+        _safe_echo(f"\n文件列表 (最多显示前 30 个)：")
+        for i, item in enumerate(inv.items[:30]):
+            old_suffix = f" [{item.old_id}]" if item.old_id else ""
+            _safe_echo(f"  {i + 1:>3}. {item.relative_path}  ({item.file_size} 字节, {item.extension}){old_suffix}")
+        if len(inv.items) > 30:
+            _safe_echo(f"  ... 还有 {len(inv.items) - 30} 个文件")
+    except InventoryNotFoundError as e:
+        _safe_echo(f"\n{_ICON_ERR} 清单不存在: {e}", err=True)
+        sys.exit(1)
+    except InventoryFormatError as e:
+        _safe_echo(f"\n{_ICON_ERR} 清单格式错误: {e}", err=True)
+        sys.exit(1)
+    except InventoryError as e:
+        _safe_echo(f"\n{_ICON_ERR} 清单错误: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        _safe_echo(f"\n{_ICON_ERR} 显示清单失败: {e}", err=True)
+        sys.exit(1)
+
+
+@inventory.command("remove")
+@click.option("--name", "-n", required=True, help="清单名称")
+@click.option("--skip-confirm", is_flag=True, help="跳过确认提示")
+@click.pass_context
+def inventory_remove(ctx: click.Context, name: str, skip_confirm: bool) -> None:
+    """删除资产清单"""
+    try:
+        app_config = ctx.obj["app_config"]
+        inv_mgr = InventoryManager(app_config)
+
+        if not skip_confirm:
+            click.echo(f"确定要删除清单 '{name}' 吗？此操作不可撤销。")
+            if not click.confirm("继续删除？", default=False):
+                _safe_echo(f"{_ICON_INFO} 已取消删除")
+                return
+
+        inv_mgr.remove_inventory(name)
+        _safe_echo(f"{_ICON_OK} 已删除清单: {name}")
+    except InventoryNotFoundError as e:
+        _safe_echo(f"\n{_ICON_ERR} 清单不存在: {e}", err=True)
+        sys.exit(1)
+    except InventoryError as e:
+        _safe_echo(f"\n{_ICON_ERR} 清单错误: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        _safe_echo(f"\n{_ICON_ERR} 删除清单失败: {e}", err=True)
+        sys.exit(1)
+
+
+@inventory.command("export")
+@click.option("--name", "-n", required=True, help="清单名称")
+@click.option("--output", "-o", "output_path", required=True, type=click.Path(), help="输出文件或目录路径")
+@click.pass_context
+def inventory_export(ctx: click.Context, name: str, output_path: str) -> None:
+    """导出资产清单到 JSON"""
+    try:
+        app_config = ctx.obj["app_config"]
+        inv_mgr = InventoryManager(app_config)
+        exported_path = inv_mgr.export_inventory(name, output_path)
+        _safe_echo(f"{_ICON_OK} 清单已导出: {name}")
+        _safe_echo(f"   输出文件: {exported_path}")
+    except InventoryNotFoundError as e:
+        _safe_echo(f"\n{_ICON_ERR} 清单不存在: {e}", err=True)
+        sys.exit(1)
+    except InventoryError as e:
+        _safe_echo(f"\n{_ICON_ERR} 清单错误: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        _safe_echo(f"\n{_ICON_ERR} 导出清单失败: {e}", err=True)
+        sys.exit(1)
+
+
+@inventory.command("import")
+@click.option("--file", "-f", "import_file", required=True, type=click.Path(exists=True, dir_okay=False), help="导入的 JSON 文件路径")
+@click.option("--overwrite", is_flag=True, help="覆盖已存在的同名清单（原子替换）")
+@click.pass_context
+def inventory_import_cmd(ctx: click.Context, import_file: str, overwrite: bool) -> None:
+    """从 JSON 导入资产清单"""
+    try:
+        app_config = ctx.obj["app_config"]
+        inv_mgr = InventoryManager(app_config)
+        imported = inv_mgr.import_inventory(import_file, overwrite=overwrite)
+
+        _safe_echo(f"{_ICON_OK} 已导入清单: {imported.name}")
+        _safe_echo(f"   文件数: {imported.file_count}")
+        _safe_echo(f"   总大小: {imported.total_size} 字节")
+        if imported.description:
+            _safe_echo(f"   描述: {imported.description}")
+        if overwrite:
+            _safe_echo(f"   (已覆盖同名清单)")
+    except InventoryFormatError as e:
+        _safe_echo(f"\n{_ICON_ERR} 清单格式错误: {e}", err=True)
+        sys.exit(1)
+    except InventoryConflictError as e:
+        _safe_echo(f"\n{_ICON_ERR} 清单冲突: {e}", err=True)
+        sys.exit(1)
+    except InventoryError as e:
+        _safe_echo(f"\n{_ICON_ERR} 清单错误: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        _safe_echo(f"\n{_ICON_ERR} 导入清单失败: {e}", err=True)
+        sys.exit(1)
+
+
+@inventory.command("diff")
+@click.option("--name", "-n", required=True, help="清单名称")
+@click.pass_context
+def inventory_diff(ctx: click.Context, name: str) -> None:
+    """将清单与当前 source_root 目录比对"""
+    try:
+        app_config = ctx.obj["app_config"]
+        inv_mgr = InventoryManager(app_config)
+        diff = inv_mgr.diff_inventory(name)
+
+        _safe_echo(f"\n清单 '{name}' 与当前目录比对结果：")
+        _safe_echo(f"  源目录: {app_config.source_root}")
+
+        if not diff.has_changes:
+            _safe_echo(f"\n{_ICON_OK} 目录内容与清单一致，没有变化")
+            return
+
+        _safe_echo(f"  新增: {len(diff.added)} 个文件")
+        _safe_echo(f"  删除: {len(diff.removed)} 个文件")
+        _safe_echo(f"  变更: {len(diff.modified)} 个文件")
+
+        if diff.added:
+            _safe_echo(f"\n[新增文件]")
+            for item in diff.added[:20]:
+                _safe_echo(f"  + {item.relative_path}  ({item.file_size} 字节)")
+            if len(diff.added) > 20:
+                _safe_echo(f"  ... 还有 {len(diff.added) - 20} 个新增文件")
+
+        if diff.removed:
+            _safe_echo(f"\n[删除文件]")
+            for item in diff.removed[:20]:
+                _safe_echo(f"  - {item.relative_path}  ({item.file_size} 字节)")
+            if len(diff.removed) > 20:
+                _safe_echo(f"  ... 还有 {len(diff.removed) - 20} 个删除文件")
+
+        if diff.modified:
+            _safe_echo(f"\n[变更文件]")
+            for m in diff.modified[:20]:
+                old = m["old"]
+                new = m["new"]
+                size_delta = new.file_size - old.file_size
+                delta_str = f"+{size_delta}" if size_delta > 0 else str(size_delta)
+                _safe_echo(f"  ~ {m['path']}  ({old.file_size} -> {new.file_size} 字节, {delta_str})")
+            if len(diff.modified) > 20:
+                _safe_echo(f"  ... 还有 {len(diff.modified) - 20} 个变更文件")
+
+    except InventoryNotFoundError as e:
+        _safe_echo(f"\n{_ICON_ERR} 清单不存在: {e}", err=True)
+        sys.exit(1)
+    except InventoryError as e:
+        _safe_echo(f"\n{_ICON_ERR} 清单错误: {e}", err=True)
+        sys.exit(1)
+    except Exception as e:
+        _safe_echo(f"\n{_ICON_ERR} 比对失败: {e}", err=True)
         sys.exit(1)
 
 
